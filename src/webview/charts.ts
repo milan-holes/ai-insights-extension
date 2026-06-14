@@ -3,6 +3,7 @@
  */
 import * as vscode from 'vscode';
 import { AggregatedMetrics } from '../types';
+import { designTokensCss } from './designSystem';
 
 export class ChartsProvider {
   private static currentPanel: vscode.WebviewPanel | undefined;
@@ -88,14 +89,7 @@ export class ChartsProvider {
 <title>AI Insights Charts</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap');
-  :root {
-    --bg-base: #0e0e0e; --bg-surface: #1a1919; --bg-surface-high: #201f1f;
-    --text-primary: #e5e2e1; --text-secondary: #c1c6d7;
-    --primary: #007AFF; --primary-glow: rgba(0,122,255,0.2);
-    --border: rgba(255,255,255,0.05);
-    --font-primary: 'Inter', system-ui, sans-serif;
-    --font-data: 'Space Grotesk', monospace;
-  }
+  ${designTokensCss()}
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:var(--font-primary); background:var(--bg-base); color:var(--text-primary); padding:32px; }
   .data-text { font-family:var(--font-data); }
@@ -248,7 +242,7 @@ export class ChartsProvider {
     type: 'doughnut',
     data: {
       labels: ${JSON.stringify(providerLabels)},
-      datasets: [{ data: ${JSON.stringify(providerData)}, backgroundColor: ${JSON.stringify(providerColors)}, borderColor: '#1a1919', borderWidth: 2 }]
+      datasets: [{ data: ${JSON.stringify(providerData)}, backgroundColor: ${JSON.stringify(providerColors)}, borderColor: '#161b22', borderWidth: 2 }]
     },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#e5e2e1' } } } }
   });

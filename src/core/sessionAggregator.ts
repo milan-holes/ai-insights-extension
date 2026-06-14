@@ -61,36 +61,48 @@ export function aggregateSessions(sessions: Session[], config: AggregationConfig
     antigravity: buildMetrics(sessions.filter(s => s.provider === 'antigravity')),
     claudeCode: buildMetrics(sessions.filter(s => s.provider === 'claudeCode')),
     codex: buildMetrics(sessions.filter(s => s.provider === 'codex')),
+    jetbrainsAI: buildMetrics(sessions.filter(s => s.provider === 'jetbrainsAI')),
+    visualStudio: buildMetrics(sessions.filter(s => s.provider === 'visualStudio')),
   };
   const todayByProvider: Record<ProviderId, ProviderMetrics> = {
     copilot: buildMetrics(todaySessions.filter(s => s.provider === 'copilot')),
     antigravity: buildMetrics(todaySessions.filter(s => s.provider === 'antigravity')),
     claudeCode: buildMetrics(todaySessions.filter(s => s.provider === 'claudeCode')),
     codex: buildMetrics(todaySessions.filter(s => s.provider === 'codex')),
+    jetbrainsAI: buildMetrics(todaySessions.filter(s => s.provider === 'jetbrainsAI')),
+    visualStudio: buildMetrics(todaySessions.filter(s => s.provider === 'visualStudio')),
   };
   const yesterdayByProvider: Record<ProviderId, ProviderMetrics> = {
     copilot: buildMetrics(yesterdaySessions.filter(s => s.provider === 'copilot')),
     antigravity: buildMetrics(yesterdaySessions.filter(s => s.provider === 'antigravity')),
     claudeCode: buildMetrics(yesterdaySessions.filter(s => s.provider === 'claudeCode')),
     codex: buildMetrics(yesterdaySessions.filter(s => s.provider === 'codex')),
+    jetbrainsAI: buildMetrics(yesterdaySessions.filter(s => s.provider === 'jetbrainsAI')),
+    visualStudio: buildMetrics(yesterdaySessions.filter(s => s.provider === 'visualStudio')),
   };
   const currentMonthByProvider: Record<ProviderId, ProviderMetrics> = {
     copilot: buildMetrics(currentMonthSessions.filter(s => s.provider === 'copilot')),
     antigravity: buildMetrics(currentMonthSessions.filter(s => s.provider === 'antigravity')),
     claudeCode: buildMetrics(currentMonthSessions.filter(s => s.provider === 'claudeCode')),
     codex: buildMetrics(currentMonthSessions.filter(s => s.provider === 'codex')),
+    jetbrainsAI: buildMetrics(currentMonthSessions.filter(s => s.provider === 'jetbrainsAI')),
+    visualStudio: buildMetrics(currentMonthSessions.filter(s => s.provider === 'visualStudio')),
   };
   const lastMonthByProvider: Record<ProviderId, ProviderMetrics> = {
     copilot: buildMetrics(lastMonthSessions.filter(s => s.provider === 'copilot')),
     antigravity: buildMetrics(lastMonthSessions.filter(s => s.provider === 'antigravity')),
     claudeCode: buildMetrics(lastMonthSessions.filter(s => s.provider === 'claudeCode')),
     codex: buildMetrics(lastMonthSessions.filter(s => s.provider === 'codex')),
+    jetbrainsAI: buildMetrics(lastMonthSessions.filter(s => s.provider === 'jetbrainsAI')),
+    visualStudio: buildMetrics(lastMonthSessions.filter(s => s.provider === 'visualStudio')),
   };
   const thisYearByProvider: Record<ProviderId, ProviderMetrics> = {
     copilot: buildMetrics(thisYearSessions.filter(s => s.provider === 'copilot')),
     antigravity: buildMetrics(thisYearSessions.filter(s => s.provider === 'antigravity')),
     claudeCode: buildMetrics(thisYearSessions.filter(s => s.provider === 'claudeCode')),
     codex: buildMetrics(thisYearSessions.filter(s => s.provider === 'codex')),
+    jetbrainsAI: buildMetrics(thisYearSessions.filter(s => s.provider === 'jetbrainsAI')),
+    visualStudio: buildMetrics(thisYearSessions.filter(s => s.provider === 'visualStudio')),
   };
   const allTimeByProvider: Record<ProviderId, ProviderMetrics> = byProvider;
 

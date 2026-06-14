@@ -10,10 +10,13 @@ import { CopilotProvider } from './providers/copilot';
 import { AntigravityProvider } from './providers/antigravity';
 import { ClaudeCodeProvider } from './providers/claudeCode';
 import { CodexProvider } from './providers/codex';
+import { JetBrainsAIProvider } from './providers/jetbrainsAI';
+import { VisualStudioProvider } from './providers/visualStudio';
 import { BaseProvider } from './providers/base';
 import { CacheManager } from './core/cacheManager';
 import { aggregateSessions } from './core/sessionAggregator';
-import { DashboardProvider } from './webview/dashboard';
+import { DashboardProvider, ShareInfo } from './webview/dashboard';
+let outputChannel: vscode.OutputChannel;
 import { ChartsProvider } from './webview/charts';
 import { DiagnosticsProvider } from './webview/diagnostics';
 import { UsageAnalysisProvider } from './webview/usageAnalysis';
@@ -24,7 +27,7 @@ import { PricingViewProvider } from './webview/pricingView';
 import { buildHygieneReports } from './core/repositoryHygiene';
 import { AcceptanceTracker } from './core/acceptanceTracker';
 import { Session, AggregatedMetrics, AggregationConfig, AlertThresholds } from './types';
-import { ConnectedGitHubUser, connectGitHubAndDetectPlan } from './core/githubAuth';
+import { ConnectedGitHubUser, connectGitHubAndDetectPlan, getGitHubAccessToken } from './core/githubAuth';
 import { PromptHistoryStore } from './core/promptHistory';
 import { PromptHistoryViewProvider } from './webview/promptHistoryView';
 import { TokenCalculatorProvider } from './webview/tokenCalculator';
@@ -35,13 +38,21 @@ import { SessionSnapshotStore } from './core/sessionSnapshotStore';
 import { LiveContextTracker, LiveContextInfo } from './core/liveContextTracker';
 import { LiveTokenCounter } from './core/liveTokenCounter';
 import { LiveBudgetConfig, RateLimitEvent } from './types';
+import { computeUsageHealthScore } from './core/usageHealthScore';
+import { RepoAnalysisViewProvider } from './webview/repoAnalysisView';
+import { ReplayViewProvider } from './webview/replayView';
+import { ShareServer } from './core/shareServer';
+import QRCode from 'qrcode';
+import { TeamShareClient, TeamShareSnapshot } from './core/teamShareClient';
 
 let statusBarItem: vscode.StatusBarItem;
+const shareServer = new ShareServer();
+const teamShareClient = new TeamShareClient();
 let refreshTimer: NodeJS.Timeout | undefined;
 let activeSessionsTimer: NodeJS.Timeout | undefined;
 let allSessions: Session[] = [];
 let latestMetrics: AggregatedMetrics | null = null;
-let liveContextInfo: LiveContextInfo | null = null;
+let liveContextInfos: LiveContextInfo[] = [];
 let connectedGitHubUser: ConnectedGitHubUser | undefined;
 const cacheManager = new CacheManager();
 let snapshotStore: SessionSnapshotStore;
@@ -56,6 +67,8 @@ let liveBudgetConfig: LiveBudgetConfig | null = null;
 let rateLimitEvents: RateLimitEvent[] = [];
 
 export function activate(context: vscode.ExtensionContext) {
+  outputChannel = vscode.window.createOutputChannel('AI Insights');
+  context.subscriptions.push(outputChannel);
   console.log('[AI Insights] Activating extension...');
 
   connectedGitHubUser = context.globalState.get<ConnectedGitHubUser>(GITHUB_USER_STATE_KEY);
@@ -84,10 +97,11 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
-  const liveTracker = new LiveContextTracker((info) => {
-    liveContextInfo = info;
+  const extraClaudePaths = vscode.workspace.getConfiguration('aiInsights').get<string[]>('providers.claudeCode.additionalSessionPaths', []);
+  const liveTracker = new LiveContextTracker((infos) => {
+    liveContextInfos = infos;
     if (latestMetrics) { updateStatusBar(latestMetrics); }
-  });
+  }, extraClaudePaths);
   liveTracker.start(context.subscriptions);
   context.subscriptions.push(liveTracker);
 
@@ -113,7 +127,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('aiInsights.showTokenCalculator', () => TokenCalculatorProvider.createPanel(context)),
     vscode.commands.registerCommand('aiInsights.showBenchmark', () => BenchmarkViewProvider.createPanel(context)),
     vscode.commands.registerCommand('aiInsights.showClaudeAccount', () => showClaudeAccount(context)),
-    vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string, note: string) =>
+vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string, note: string) =>
       handleLogRateLimitHit(context, provider as any, note),
     ),
     vscode.commands.registerCommand('aiInsights.saveLiveBudgetConfig', (cfg: LiveBudgetConfig) =>
@@ -124,6 +138,15 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('aiInsights.configureTokenHighlightColors', () =>
       vscode.commands.executeCommand('workbench.action.openSettings', 'aiInsights.tokenCounter'),
     ),
+    vscode.commands.registerCommand('aiInsights.showRepoAnalysis', () =>
+      RepoAnalysisViewProvider.createPanel(context),
+    ),
+    vscode.commands.registerCommand('aiInsights.showSessionReplay', (sessionId: string) => {
+      const session = allSessions.find(s => s.id === sessionId);
+      if (session) { ReplayViewProvider.createPanel(context, session); }
+    }),
+    vscode.commands.registerCommand('aiInsights.startSharing', () => handleStartSharing()),
+    vscode.commands.registerCommand('aiInsights.stopSharing', () => handleStopSharing()),
   );
 
   refresh(providers);
@@ -157,6 +180,155 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
   if (refreshTimer) { clearInterval(refreshTimer); }
   if (activeSessionsTimer) { clearInterval(activeSessionsTimer); }
+  shareServer.stop();
+}
+
+async function handleStartSharing() {
+  outputChannel.appendLine(`[Share] startSharing called. latestMetrics=${!!latestMetrics} remoteName=${vscode.env.remoteName}`);
+  if (!latestMetrics) {
+    DashboardProvider.postSharingError('No data loaded yet — wait a moment and try again.');
+    vscode.window.showWarningMessage('AI Insights: No data loaded yet. Please wait for the extension to load.');
+    return;
+  }
+  try {
+    const config = vscode.workspace.getConfiguration('aiInsights');
+    const sharingMode = config.get<'localNetwork' | 'teamServer'>('sharing.mode', 'localNetwork');
+    const teamEndpointUrl = config.get<string>('sharing.teamServer.endpointUrl', '').trim();
+    if (sharingMode === 'teamServer') {
+      if (!teamEndpointUrl) {
+        const action = await vscode.window.showWarningMessage(
+          'AI Insights: Team server sharing needs aiInsights.sharing.teamServer.endpointUrl.',
+          'Open Settings',
+        );
+        if (action === 'Open Settings') {
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'aiInsights.sharing.teamServer.endpointUrl');
+        }
+        return;
+      }
+      await handleTeamServerSharing(teamEndpointUrl);
+      return;
+    }
+
+    const publicHost = config.get<string>('shareHost', '');
+    const fixedPort = config.get<number>('sharePort', 0);
+    const isWsl = vscode.env.remoteName === 'wsl';
+
+    if (shareServer.isRunning) {
+      const url = shareServer.shareUrl!;
+      const urls = shareServer.shareUrls;
+      const qrDataUrl = await buildQrDataUrl(urls[0] ?? shareServer.localUrl!);
+      const shareInfo: ShareInfo = { localUrl: shareServer.localUrl!, lanUrls: urls, warning: shareServer.warning, qrDataUrl };
+      DashboardProvider.postSharingInfo(shareInfo);
+      const buttons = isWsl
+        ? ['Copy URL', 'Copy Windows Command', 'Set Host', 'Stop Sharing'] as const
+        : ['Copy URL', 'Copy All URLs', 'Set Host', 'Stop Sharing'] as const;
+      const action = await vscode.window.showInformationMessage(
+        shareMessage(`AI Insights is already sharing at ${url}`, shareServer.warning),
+        ...buttons,
+      );
+      if (action === 'Copy URL') { await vscode.env.clipboard.writeText(url); vscode.window.showInformationMessage('URL copied to clipboard.'); }
+      if (action === 'Copy All URLs') { await vscode.env.clipboard.writeText(urls.join('\n')); vscode.window.showInformationMessage('Share URLs copied to clipboard.'); }
+      if (action === 'Copy Windows Command') { await copyWslForwardCommand(); }
+      if (action === 'Set Host') { await vscode.commands.executeCommand('workbench.action.openSettings', 'aiInsights.shareHost'); }
+      if (action === 'Stop Sharing') { handleStopSharing(); }
+      return;
+    }
+    outputChannel.appendLine(`[Share] Starting server on port ${fixedPort || '(auto)'}…`);
+    const url = await shareServer.start(latestMetrics, { publicHost, remoteName: vscode.env.remoteName, fixedPort });
+    outputChannel.appendLine(`[Share] Server started. url=${url} port=${shareServer.port} localUrl=${shareServer.localUrl} warning=${shareServer.warning}`);
+    const urls = shareServer.shareUrls;
+    const qrDataUrl = await buildQrDataUrl(urls[0] ?? shareServer.localUrl!);
+    const shareInfo: ShareInfo = { localUrl: shareServer.localUrl!, lanUrls: urls, warning: shareServer.warning, qrDataUrl };
+    DashboardProvider.postSharingInfo(shareInfo);
+    const buttons = isWsl
+      ? ['Copy URL', 'Copy Windows Command', 'Set Host', 'Stop Sharing'] as const
+      : ['Copy URL', 'Copy All URLs', 'Set Host', 'Stop Sharing'] as const;
+    const action = await vscode.window.showInformationMessage(
+      shareMessage(`Stats are live at ${url} (expires in 30 min)`, shareServer.warning),
+      ...buttons,
+    );
+    if (action === 'Copy URL') { await vscode.env.clipboard.writeText(url); vscode.window.showInformationMessage('URL copied to clipboard.'); }
+    if (action === 'Copy All URLs') { await vscode.env.clipboard.writeText(urls.join('\n')); vscode.window.showInformationMessage('Share URLs copied to clipboard.'); }
+    if (action === 'Copy Windows Command') { await copyWslForwardCommand(); }
+    if (action === 'Set Host') { await vscode.commands.executeCommand('workbench.action.openSettings', 'aiInsights.shareHost'); }
+    if (action === 'Stop Sharing') { handleStopSharing(); }
+  } catch (err) {
+    outputChannel.appendLine(`[Share] ERROR: ${err}`);
+    outputChannel.show(true);
+    DashboardProvider.postSharingError(`${err}`);
+    vscode.window.showErrorMessage(`AI Insights: Failed to start sharing - ${err}`);
+  }
+}
+
+async function buildQrDataUrl(url: string): Promise<string | undefined> {
+  try {
+    return await QRCode.toDataURL(url, { margin: 1, width: 240, color: { dark: '#e5e2e1', light: '#1a1919' } });
+  } catch {
+    return undefined;
+  }
+}
+
+async function copyWslForwardCommand(): Promise<void> {
+  const port = shareServer.port;
+  const wslIp = shareServer.wslInternalIp ?? '<WSL-IP>';
+  // Run in an elevated PowerShell session on the Windows host.
+  const cmd = [
+    `# Run this in PowerShell (Admin) on Windows to forward port ${port} from your LAN to WSL`,
+    `$wslIp = "${wslIp}"`,
+    `$port = ${port}`,
+    `netsh interface portproxy add v4tov4 listenport=$port listenaddress=0.0.0.0 connectport=$port connectaddress=$wslIp`,
+    `New-NetFirewallRule -DisplayName "AI Insights Share $port" -Direction Inbound -LocalPort $port -Protocol TCP -Action Allow -ErrorAction SilentlyContinue`,
+  ].join('\n');
+  await vscode.env.clipboard.writeText(cmd);
+  vscode.window.showInformationMessage(
+    `Copied! Paste and run in PowerShell (Admin) on Windows, then use your computer's LAN IP in the share URL. ` +
+    `Tip: set aiInsights.sharePort to ${port} to reuse the same port next time.`,
+    'Open Settings',
+  ).then(action => {
+    if (action === 'Open Settings') {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'aiInsights.sharePort');
+    }
+  });
+}
+
+async function handleTeamServerSharing(endpointUrl: string): Promise<void> {
+  const token = await getGitHubAccessToken();
+  if (!token) { return; }
+
+  const snapshot: TeamShareSnapshot = {
+    generatedAt: new Date().toISOString(),
+    source: {
+      extension: 'ai-insights',
+      workspaceName: vscode.workspace.name ?? 'Unknown workspace',
+      machineId: vscode.env.machineId,
+      appName: vscode.env.appName,
+    },
+    metrics: latestMetrics!,
+  };
+
+  const result = await teamShareClient.uploadSnapshot(endpointUrl, token, snapshot);
+  const expiry = result.expiresAt ? ` (expires ${new Date(result.expiresAt).toLocaleString()})` : '';
+  const action = await vscode.window.showInformationMessage(
+    `Stats uploaded to team server: ${result.dashboardUrl}${expiry}`,
+    'Copy URL', 'Open Dashboard',
+  );
+  if (action === 'Copy URL') {
+    await vscode.env.clipboard.writeText(result.dashboardUrl);
+    vscode.window.showInformationMessage('Dashboard URL copied to clipboard.');
+  }
+  if (action === 'Open Dashboard') {
+    await vscode.env.openExternal(vscode.Uri.parse(result.dashboardUrl));
+  }
+}
+
+function shareMessage(message: string, warning: string | null): string {
+  return warning ? `${message}\n\n${warning}` : message;
+}
+
+function handleStopSharing() {
+  shareServer.stop();
+  DashboardProvider.postSharingInfo(null);
+  vscode.window.showInformationMessage('AI Insights: Sharing stopped.');
 }
 
 function getEnabledProviders(): BaseProvider[] {
@@ -170,10 +342,17 @@ function getEnabledProviders(): BaseProvider[] {
     providers.push(new AntigravityProvider());
   }
   if (config.get<boolean>('providers.claudeCode.enabled', true)) {
-    providers.push(new ClaudeCodeProvider());
+    const extraPaths = config.get<string[]>('providers.claudeCode.additionalSessionPaths', []);
+    providers.push(new ClaudeCodeProvider(extraPaths));
   }
   if (config.get<boolean>('providers.codex.enabled', true)) {
     providers.push(new CodexProvider());
+  }
+  if (config.get<boolean>('providers.jetbrainsAI.enabled', true)) {
+    providers.push(new JetBrainsAIProvider());
+  }
+  if (config.get<boolean>('providers.visualStudio.enabled', true)) {
+    providers.push(new VisualStudioProvider());
   }
 
   return providers;
@@ -322,39 +501,53 @@ function updateStatusBar(metrics: AggregatedMetrics) {
   const aiCost = metrics.currentMonth.estimatedCost;
   const roiMultiplier = aiCost > 0 ? (valueGenerated / aiCost).toFixed(0) : '∞';
 
-  const live = liveContextInfo;
+  const liveSessions = liveContextInfos;
+  const primary = liveSessions[0] ?? null;
 
-  if (live) {
-    const healthIcon = live.healthLabel === 'healthy' ? '$(check)'
-      : live.healthLabel === 'warning' ? '$(warning)'
+  if (primary) {
+    const healthIcon = primary.healthLabel === 'healthy' ? '$(check)'
+      : primary.healthLabel === 'warning' ? '$(warning)'
       : '$(error)';
+    const multiLabel = liveSessions.length > 1 ? ` ·${liveSessions.length} active` : '';
+    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     statusBarItem.text =
-      `$(pulse) ctx: ${fmt(live.lastInputTokens)} (${live.contextPct}%) ${healthIcon} · ${today} today`;
+      `$(record) LIVE · ctx: ${fmt(primary.lastInputTokens)} (${primary.contextPct}%) ${healthIcon}${multiLabel} · ${today} today`;
 
-    const titleLine = live.sessionTitle ? `**${live.sessionTitle}**\n\n` : '';
-    const ctxBar = buildMiniBar(live.contextPct, 20);
     const lines = [
-      `🧠 AI Insights — Live Session`,
+      `🔴 **Session in progress** — don't close VS Code`,
       ``,
-      titleLine +
-      `Context: ${live.lastInputTokens.toLocaleString()} / ${live.contextLimitTokens.toLocaleString()} tokens`,
-      `\`${ctxBar}\` ${live.contextPct}%`,
-      `Health: **${live.healthLabel}** (${live.healthScore}/10) · Turns: ${live.turnsCount}`,
-      `Cache efficiency: ${live.cacheEfficiencyPct}%`,
+      `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''}`,
       ``,
-      `📅 Today: ${metrics.today.totalTokens.toLocaleString()} tokens · ${metrics.today.sessions} sessions`,
     ];
+
+    for (const live of liveSessions) {
+      const titleLine = live.sessionTitle ? `**${live.sessionTitle}**` : '_Unnamed session_';
+      const ctxBar = buildMiniBar(live.contextPct, 20);
+      const healthIcon2 = live.healthLabel === 'healthy' ? '✅' : live.healthLabel === 'warning' ? '⚠️' : '🔴';
+      const fmt2 = (n: number) => n.toLocaleString();
+      lines.push(
+        titleLine,
+        `\`${ctxBar}\` ${live.contextPct}% · ${fmt2(live.lastInputTokens)} / ${fmt2(live.contextLimitTokens)} tokens`,
+        `${healthIcon2} **${live.healthLabel}** (${live.healthScore}/10) · ${live.turnsCount} turns · ${live.cacheEfficiencyPct}% cache`,
+        ``,
+      );
+    }
+
+    lines.push(
+      `📅 Today: ${metrics.today.totalTokens.toLocaleString()} tokens · ${metrics.today.sessions} sessions`,
+    );
     for (const [id, p] of Object.entries(metrics.todayByProvider)) {
       if (p.totalTokens > 0) {
         lines.push(`\n &nbsp; ${getProviderDisplayName(id)}: ${p.totalTokens.toLocaleString()} tokens`);
       }
     }
-    lines.push(``, `_Click for dashboard_`);
+    lines.push(``, `⚠️ _Closing VS Code will end the session_`, ``, `_Click for dashboard_`);
 
     const tooltip = new vscode.MarkdownString(lines.join('\n'));
     tooltip.isTrusted = true;
     statusBarItem.tooltip = tooltip;
   } else {
+    statusBarItem.backgroundColor = undefined;
     statusBarItem.text = `$(pulse) ${today} | ${monthly} | ~${fmtHours} saved ${overageIcon}`.trim();
 
     const lines = [
@@ -411,7 +604,9 @@ async function showDashboard(context: vscode.ExtensionContext) {
   if (latestMetrics) {
     const cfg = vscode.workspace.getConfiguration('aiInsights');
     const roiCfg = { hourlyRate: cfg.get<number>('roi.developerHourlyRate', 75), tokensPerHourSaved: cfg.get<number>('roi.outputTokensPerHourSaved', 3000) };
-    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptanceTracker.getStats());
+    const acceptance = acceptanceTracker.getStats();
+    const healthScore = computeUsageHealthScore(latestMetrics, allSessions, acceptance);
+    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore);
   }
 }
 
@@ -440,7 +635,7 @@ async function showCharts(context: vscode.ExtensionContext) {
   if (latestMetrics) { ChartsProvider.createPanel(context, latestMetrics); }
 }
 
-async function showDiagnostics(context: vscode.ExtensionContext, providers: BaseProvider[]) {
+async function showDiagnostics(_context: vscode.ExtensionContext, providers: BaseProvider[]) {
   if (!latestMetrics) { await refresh(providers); }
   const report = await DiagnosticsProvider.generateReport(
     providers, cacheManager,

@@ -90,13 +90,15 @@ export class CodexProvider extends BaseProvider {
             continue;
           }
 
-          // Capture title from first user message if not already found
-          if (!title) {
-            const role = entry.payload?.role ?? entry.role;
-            const content = entry.payload?.content ?? entry.payload?.text ?? entry.content ?? entry.text;
-            if (role === 'user' && typeof content === 'string' && content.trim().length > 0) {
-              title = content.trim().slice(0, 80).replace(/[\n\r]+/g, ' ');
-            }
+          // Capture title from the dedicated user_message event only.
+          // response_item entries with role='user' contain injected context
+          // (environment_context, permissions) and must not be used as the title.
+          if (!title && entry.type === 'event_msg' && entry.payload?.type === 'user_message' && entry.payload?.message) {
+            let msg = String(entry.payload.message);
+            // VS Code extension injects IDE context before the real request; extract it when present
+            const requestMatch = msg.match(/##\s*My request for Codex:\s*\n([\s\S]+)/i);
+            if (requestMatch) { msg = requestMatch[1]; }
+            title = msg.trim().slice(0, 80).replace(/[\n\r]+/g, ' ');
           }
 
           const payloadType = entry.payload?.type;
@@ -144,6 +146,7 @@ export class CodexProvider extends BaseProvider {
             cacheReadTokens,
             cacheWriteTokens: 0,
             totalTokens,
+            effectiveContextTokens: inputTokens + cacheReadTokens,
             mode: 'agent',
             toolCalls: pendingToolCalls,
             commandRuns: pendingCommandRuns.length > 0 ? pendingCommandRuns : undefined,

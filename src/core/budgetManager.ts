@@ -44,6 +44,9 @@ export function computeBudgetMetrics(
   const dailyBurnRate = mtdSpend / daysElapsed;
   const projectedMonthEnd = dailyBurnRate * daysInMonth;
 
+  // Hourly burn: smooth 30-day average daily rate divided into hours
+  const hourlyBurnRate = dailyBurnRate / 24;
+
   const daysUntilExhausted =
     dailyBurnRate > 0 && creditsRemaining > 0
       ? creditsRemaining / dailyBurnRate
@@ -58,6 +61,7 @@ export function computeBudgetMetrics(
     mtdSpend,
     creditsRemaining,
     dailyBurnRate,
+    hourlyBurnRate,
     daysElapsed,
     daysInMonth,
     daysRemaining,

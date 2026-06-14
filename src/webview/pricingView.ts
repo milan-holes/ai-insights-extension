@@ -3,6 +3,7 @@ import pricingData from '../data/modelPricing.json';
 import { AggregatedMetrics } from '../types';
 import { ConnectedGitHubUser } from '../core/githubAuth';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 interface ModelEntry {
   displayName: string;
@@ -168,10 +169,25 @@ export class PricingViewProvider {
         const remainingCredits = Math.max(0, planBudgetCredits - usedCredits);
         const usedPct = planBudgetCredits > 0 ? Math.min(100, (usedCredits / planBudgetCredits) * 100) : 0;
         const barColor = usedPct >= 95 ? '#ff6b6b' : usedPct >= 80 ? '#f9e2af' : '#39FF14';
+        const hourlyRate = metrics.budget.hourlyBurnRate;
+        const hoursUntilExhausted = hourlyRate > 0 && remainingCredits > 0
+          ? (remainingCredits * USD_PER_AI_CREDIT) / hourlyRate
+          : null;
+        const exhaustedStr = hoursUntilExhausted !== null
+          ? hoursUntilExhausted < 24
+            ? `~${hoursUntilExhausted.toFixed(1)}h until limit`
+            : `~${(hoursUntilExhausted / 24).toFixed(1)}d until limit`
+          : '';
         const creditsLine = githubUser.monthlyBudgetUsd > 0
           ? `<div style="margin-top:6px;font-size:0.8em;color:var(--text-secondary)">
                <span style="color:var(--text-primary);font-weight:500">${remainingCredits.toFixed(0)} credits remaining</span>
                &nbsp;of ${planBudgetCredits.toFixed(0)} &middot; ${usedCredits.toFixed(0)} used (${usedPct.toFixed(1)}%)
+               ${exhaustedStr ? `&middot; <span style="color:${barColor};">${exhaustedStr}</span>` : ''}
+             </div>
+             <div style="margin-top:4px;font-size:0.78em;color:var(--text-secondary);">
+               Burn: <span class="data-text" style="color:var(--text-primary);">$${(hourlyRate * 100).toFixed(4)}/hr</span>
+               &nbsp;&middot;&nbsp;$${metrics.budget.dailyBurnRate.toFixed(4)}/day
+               &nbsp;&middot;&nbsp;Projected month-end: <span style="color:${metrics.budget.projectedMonthEnd > githubUser.monthlyBudgetUsd ? '#ff6b6b' : '#39FF14'};">$${metrics.budget.projectedMonthEnd.toFixed(2)}</span>
              </div>
              <div class="gh-credits-bar" style="margin-top:6px">
                <div class="gh-credits-bar-fill" style="width:${usedPct.toFixed(1)}%;background:${barColor}"></div>
@@ -197,11 +213,16 @@ export class PricingViewProvider {
         </div>`;
       }
 
+      const b = metrics.budget;
+      const fmtBurnRate = (usd: number) => usd < 0.0001 ? `$${(usd * 100).toFixed(4)}¢` : `$${usd.toFixed(4)}`;
+
       let alertBanner = '';
       if (budgetPct >= 95) {
-        alertBanner = `<div class="alert alert-crit">🚨 Copilot budget critical: ${Math.round(budgetPct)}% of monthly GitHub AI Credits used. Overage may apply.</div>`;
+        alertBanner = `<div class="alert alert-crit">🚨 Budget critical: ${Math.round(budgetPct)}% used · ${fmtBurnRate(b.hourlyBurnRate)}/hr burn · ${b.daysUntilExhausted !== null ? `${Math.round(b.daysUntilExhausted)} days until exhausted` : 'no exhaustion projected'}. Overage may apply.</div>`;
       } else if (budgetPct >= 80) {
-        alertBanner = `<div class="alert alert-info">⚠️ Copilot budget warning: ${Math.round(budgetPct)}% of monthly GitHub AI Credits used.</div>`;
+        alertBanner = `<div class="alert alert-info">⚠️ Budget warning: ${Math.round(budgetPct)}% of monthly AI Credits used · ${fmtBurnRate(b.hourlyBurnRate)}/hr · ${b.daysUntilExhausted !== null ? `${Math.round(b.daysUntilExhausted)} days remaining` : ''}.</div>`;
+      } else if (budgetPct >= 50) {
+        alertBanner = `<div class="alert alert-ok">ℹ️ Halfway: ${Math.round(budgetPct)}% of monthly AI Credits used · ${fmtBurnRate(b.hourlyBurnRate)}/hr burn rate.</div>`;
       }
 
       // Model usage table
@@ -325,14 +346,7 @@ export class PricingViewProvider {
 <title>AI Insights - GitHub Copilot</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap');
-  :root {
-    --bg-base: #0e0e0e; --bg-surface: #1a1919; --bg-surface-high: #201f1f;
-    --text-primary: #e5e2e1; --text-secondary: #c1c6d7;
-    --primary: #007AFF; --border: rgba(255,255,255,0.05);
-    --green: #39FF14;
-    --font-primary: 'Inter', system-ui, sans-serif;
-    --font-data: 'Space Grotesk', 'JetBrains Mono', monospace;
-  }
+  ${designTokensCss()}
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:var(--font-primary); background:var(--bg-base); color:var(--text-primary); padding:0; line-height:1.6; }
   .data-text { font-family:var(--font-data); }
@@ -353,6 +367,7 @@ export class PricingViewProvider {
   .alert { padding:10px 14px; border-radius:6px; font-size:0.85em; margin-bottom:10px; }
   .alert-crit { background:rgba(255,77,77,0.1); border:1px solid rgba(255,77,77,0.35); color:#ff8a8a; }
   .alert-info { background:rgba(0,122,255,0.07); border:1px solid rgba(0,122,255,0.25); color:#6db3ff; }
+  .alert-ok { background:rgba(249,226,175,0.07); border:1px solid rgba(249,226,175,0.25); color:#f9e2af; }
   .info-bar { background:rgba(0,122,255,0.07); border:1px solid rgba(0,122,255,0.2); border-radius:8px; padding:14px 18px; margin-bottom:24px; display:flex; gap:32px; flex-wrap:wrap; align-items:center; }
   .info-item { font-size:0.88em; color:var(--text-secondary); }
   .info-item strong { color:var(--text-primary); }

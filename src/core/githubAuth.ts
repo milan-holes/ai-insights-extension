@@ -86,3 +86,17 @@ export async function connectGitHubAndDetectPlan(): Promise<ConnectedGitHubUser 
 
   return { login: user.login, planName, monthlyBudgetUsd: budget };
 }
+
+export async function getGitHubAccessToken(options: { forceNewSession?: boolean } = {}): Promise<string | undefined> {
+  try {
+    const session = await vscode.authentication.getSession(
+      'github',
+      ['read:user'],
+      { createIfNone: true, forceNewSession: options.forceNewSession ?? false },
+    );
+    return session.accessToken;
+  } catch {
+    vscode.window.showErrorMessage('AI Insights: GitHub sign-in is required for team server sharing.');
+    return undefined;
+  }
+}

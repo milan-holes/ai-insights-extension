@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 import { BUILT_IN_TECHNIQUES } from '../benchmark/techniques';
 import { BUILT_IN_TASKS } from '../benchmark/tasks';
 import { runBenchmark } from '../benchmark/runner';
@@ -169,12 +170,7 @@ export class BenchmarkViewProvider {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Technique Benchmark</title>
 <style>
-  :root {
-    --bg-base: #0f1218; --bg-surface: #161b24; --bg-surface-high: #1e2530;
-    --border: rgba(255,255,255,0.07); --text-primary: #e8eaf0; --text-secondary: #8b909e;
-    --primary: #007AFF; --success: #34d399; --warning: #fbbf24; --danger: #f87171;
-    --font-primary: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  }
+  ${designTokensCss()}
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg-base); color: var(--text-primary); font-family: var(--font-primary); font-size: 13px; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   .scroll-area { flex: 1; overflow-y: auto; }

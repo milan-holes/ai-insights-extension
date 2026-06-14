@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { AggregatedMetrics, Session } from '../types';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 const PLAN_STATE_KEY    = 'aiInsights.claudePlan';
 const WINDOW_CONFIG_KEY = 'aiInsights.windowConfig';
@@ -278,14 +279,9 @@ export class ClaudeAccountViewProvider {
   <title>Claude</title>
   <style nonce="${nonce}">
     ${navCss()}
-    :root {
-      --bg-base: #0e0e0e; --bg-surface: #161616; --bg-surface-high: #1e1e1e;
-      --text-primary: #e5e2e1; --text-secondary: #888;
-      --primary: #e8621a; --border: rgba(255,255,255,0.07);
-      --stage-4: #39FF14; --stage-1: #FF4D4D;
-      --font-primary: 'Inter', system-ui, sans-serif;
-      --font-data: 'Space Grotesk', 'Courier New', monospace;
-    }
+    ${designTokensCss()}
+    /* Claude brand accent — deliberate override of the shared --primary */
+    :root { --primary: #e8621a; --primary-hover: #c95210; --primary-glow: rgba(232,98,26,.2); }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: var(--font-primary); background: var(--bg-base); color: var(--text-primary); min-height: 100vh; display: flex; flex-direction: column; font-size: 13px; }
 
@@ -582,7 +578,7 @@ export class ClaudeAccountViewProvider {
       if (btn) {
         btn.textContent = 'Saved ✓';
         btn.style.background = '#39FF14';
-        btn.style.color = '#0e0e0e';
+        btn.style.color = '#0f1218';
         setTimeout(function() {
           btn.textContent = 'Save';
           btn.style.background = '';
@@ -658,6 +654,7 @@ function buildModelRows(
 ): string {
   if (!modelUsage || Object.keys(modelUsage).length === 0) { return ''; }
   return Object.entries(modelUsage)
+    .filter(([model, m]) => model.trim() !== '' && m.totalTokens > 0)
     .sort(([, a], [, b]) => b.totalTokens - a.totalTokens)
     .map(([model, m]) =>
       `<tr>

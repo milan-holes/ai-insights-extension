@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import pricingData from '../data/modelPricing.json'
+import { designTokensCss } from './designSystem'
 
 const TEXT_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
@@ -87,7 +88,8 @@ export class TokenCalculatorProvider {
 <html>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}' ${webview.cspSource};">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}' ${webview.cspSource}; script-src 'nonce-${nonce}' ${webview.cspSource};">
+<style nonce="${nonce}">${designTokensCss()}</style>
 <link rel="stylesheet" href="${cssUri}">
 </head>
 <body>

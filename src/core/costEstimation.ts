@@ -97,9 +97,9 @@ function findModelPricing(model: string): typeof pricing[string] | null {
   // Exact match
   if (pricing[normalized]) { return pricing[normalized]; }
 
-  // Try common normalizations
+  // Model name contains a known key (e.g. "gpt-4o-2024-05-13" contains "gpt-4o")
   for (const key of Object.keys(pricing)) {
-    if (normalized.includes(key) || key.includes(normalized)) {
+    if (normalized.includes(key)) {
       return pricing[key];
     }
   }

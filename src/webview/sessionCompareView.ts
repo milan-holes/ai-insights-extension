@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { Session } from '../types';
 import { computeContextRotScore } from '../core/contextRot';
 import { navCss, navTopbarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 interface CompareSessionData {
   id: string;
@@ -179,7 +180,7 @@ export class SessionCompareProvider {
     parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     parts.push('<title>Session Comparison</title>');
     parts.push('<style>');
-    parts.push(':root{--bg-base:#0e0e0e;--bg-surface:#1a1919;--bg-surface-high:#201f1f;--text-primary:#e5e2e1;--text-secondary:#c1c6d7;--primary:#007AFF;--primary-glow:rgba(0,122,255,0.2);--border:rgba(255,255,255,0.05);--font-primary:"Inter",system-ui,sans-serif;--font-data:"JetBrains Mono",monospace;}');
+    parts.push(designTokensCss());
     parts.push('*{margin:0;padding:0;box-sizing:border-box;}');
     parts.push('body{font-family:var(--font-primary);background:var(--bg-base);color:var(--text-primary);line-height:1.6;}');
     parts.push(navCss());

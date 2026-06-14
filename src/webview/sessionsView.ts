@@ -3,6 +3,7 @@ import { LiveBudgetConfig, LiveSessionState, Session } from '../types';
 import { PROVIDER_ICONS } from './providerIcons';
 import { computeContextRotScore, computeContextRotAnalysis, ContextRotScore } from '../core/contextRot';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 type SessionRow = {
   id: string;
@@ -121,6 +122,8 @@ export class SessionsViewProvider {
           vscode.workspace.openTextDocument(vscode.Uri.file(message.sourceFile))
             .then(doc => vscode.window.showTextDocument(doc))
             .then(undefined, () => vscode.window.showErrorMessage(`Cannot open: ${message.sourceFile}`));
+        } else if (message.command === 'replaySession' && message.sessionId) {
+          vscode.commands.executeCommand('aiInsights.showSessionReplay', message.sessionId);
         } else if (message.command === 'compareSelectedSessions' && Array.isArray(message.sessionIds) && message.sessionIds.length >= 2) {
           vscode.commands.executeCommand('aiInsights.compareSessionsView', message.sessionIds);
         } else if (message.command === 'addTag' && message.sessionId && message.tag) {
@@ -253,7 +256,7 @@ export class SessionsViewProvider {
     parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     parts.push('<title>AI Sessions</title>');
     parts.push('<style>');
-    parts.push(':root{--bg-base:#0e0e0e;--bg-surface:#1a1919;--bg-surface-high:#201f1f;--text-primary:#e5e2e1;--text-secondary:#c1c6d7;--primary:#007AFF;--primary-glow:rgba(0,122,255,0.2);--border:rgba(255,255,255,0.05);--font-primary:"Inter",system-ui,sans-serif;--font-data:"JetBrains Mono",monospace;}');
+    parts.push(designTokensCss());
     parts.push('*{margin:0;padding:0;box-sizing:border-box;}');
     parts.push('body{font-family:var(--font-primary);background:var(--bg-base);color:var(--text-primary);padding:0;line-height:1.6;}');
     parts.push(navCss());
@@ -555,7 +558,7 @@ export class SessionsViewProvider {
     parts.push('    <option value="thisYear" selected>This Year</option>');
     parts.push('    <option value="all">All Time</option>');
     parts.push('  </select></div>');
-    parts.push('  <div class="filter-group"><span class="filter-label">Provider</span><select id="providerFilter"><option value="">All</option><option value="claudeCode">Claude Code</option><option value="copilot">Copilot</option><option value="antigravity">Antigravity</option><option value="codex">Codex</option></select></div>');
+    parts.push('  <div class="filter-group"><span class="filter-label">Provider</span><select id="providerFilter"><option value="">All</option><option value="claudeCode">Claude Code</option><option value="copilot">Copilot</option><option value="antigravity">Antigravity</option><option value="codex">Codex</option><option value="jetbrainsAI">JetBrains AI</option><option value="visualStudio">Visual Studio</option></select></div>');
     parts.push('  <div class="filter-group"><span class="filter-label">Metric</span><select id="metricType"><option value="tokens">Token Consumption</option><option value="sessions">Usage (Sessions)</option></select></div>');
     parts.push('  <div class="filter-group"><span class="filter-label">By</span><select id="breakdownType"><option value="provider">Provider</option><option value="model">Model</option><option value="workspace">Repository</option></select></div>');
     parts.push('  <input type="text" id="searchFilter" placeholder="Search sessions, models, repos..." />');
@@ -692,6 +695,8 @@ export class SessionsViewProvider {
 
     parts.push('  function openSession(idx){var s=currentFiltered[idx];if(s&&s.sourceFile)vscode.postMessage({command:"openSession",sourceFile:s.sourceFile});}');
     parts.push('  window.openSession=openSession;');
+    parts.push('  function replaySession(idx){var s=currentFiltered[idx];if(s)vscode.postMessage({command:"replaySession",sessionId:s.id});}');
+    parts.push('  window.replaySession=replaySession;');
 
     // ── Analyze overlay ────────────────────────────────────────────────────────
     parts.push('  var _ovChart=null,_ovRingChart=null,_budgetChart=null,_ovPending=null;');
@@ -1164,11 +1169,12 @@ export class SessionsViewProvider {
     parts.push('      var mods=(s.models||[]).map(m=>"<span class=\\"model-tag\\">"+esc(m)+"</span>").join("")||"-";');
     parts.push('      var titleCell=s.title?"<span class=\\"title-cell\\" title=\\""+esc(s.title)+"\\">" +esc(s.title)+"</span>":"<span style=\\"opacity:0.3\\">-</span>";');
     parts.push('      var openBtn=s.sourceFile?"<button class=\\"btn-open\\" onclick=\\"openSession("+idx+")\\">Open</button>":"";');
+    parts.push('      var replayBtn=s.interactions>0?"<button class=\\"btn-open\\" onclick=\\"replaySession("+idx+")\\" title=\\"Replay session timeline\\">Replay</button>":"";');
     parts.push('      var analyzeBtn="<button class=\\"btn-open\\" onclick=\\"analyzeSession("+idx+")\\" title=\\"Context Workbench\\">Analyze</button>";');
     parts.push('      var chkHtml="<td class=\\"chk-cell\\"><input type=\\"checkbox\\" class=\\"row-check\\" data-idx=\\""+idx+"\\" "+(selectedIds.has(s.id)?"checked":"")+" onchange=\\"toggleRow("+idx+")\\" title=\\"Select for comparison\\"></td>";');
     parts.push('      var tagChips=(s.tags||[]).map(function(tg){return"<span class=\\"tag-chip\\">"+esc(tg)+"<button class=\\"tag-rm\\" data-rm-idx=\\""+idx+"\\" data-rm-tag=\\""+esc(tg)+"\\" title=\\"Remove tag\\">&#215;</button></span>";}).join("");');
     parts.push('      var tagCell="<td class=\\"tags-cell\\">"+tagChips+"<button class=\\"btn-tag-add\\" data-add-idx=\\""+idx+"\\" title=\\"Add tag\\">+</button><input class=\\"tag-input\\" id=\\"ti"+idx+"\\" data-idx=\\""+idx+"\\" placeholder=\\"tag…\\" style=\\"display:none\\"></td>";');
-    parts.push('      return "<tr data-idx=\\""+idx+"\\">"+chkHtml+"<td class=\\"data-text\\">"+fmtDate(s.startTime)+"</td><td>"+badge(s.provider,s.providerName)+"</td><td>"+titleCell+"</td><td><span class=\\"ws-cell\\" title=\\""+esc(s.workspace||"")+"\\">"+ esc(repo)+"</span></td><td class=\\"data-text\\" style=\\"font-weight:600\\">"+fmt(s.totalTokens)+"</td>"+breakdown(s)+costCell(s)+contextHealthCell(s)+"<td class=\\"data-text\\">"+s.interactions+"</td><td>"+mods+"</td><td class=\\"data-text\\" style=\\"color:var(--text-secondary)\\">"+fmtDur(s.startTime,s.endTime)+"</td>"+tagCell+"<td style=\\"white-space:nowrap\\">"+analyzeBtn+" "+openBtn+"</td></tr>";');
+    parts.push('      return "<tr data-idx=\\""+idx+"\\">"+chkHtml+"<td class=\\"data-text\\">"+fmtDate(s.startTime)+"</td><td>"+badge(s.provider,s.providerName)+"</td><td>"+titleCell+"</td><td><span class=\\"ws-cell\\" title=\\""+esc(s.workspace||"")+"\\">"+ esc(repo)+"</span></td><td class=\\"data-text\\" style=\\"font-weight:600\\">"+fmt(s.totalTokens)+"</td>"+breakdown(s)+costCell(s)+contextHealthCell(s)+"<td class=\\"data-text\\">"+s.interactions+"</td><td>"+mods+"</td><td class=\\"data-text\\" style=\\"color:var(--text-secondary)\\">"+fmtDur(s.startTime,s.endTime)+"</td>"+tagCell+"<td style=\\"white-space:nowrap\\">"+analyzeBtn+" "+replayBtn+" "+openBtn+"</td></tr>";');
     parts.push('    }).join("");');
     parts.push('    var pgHtml=totalPages>1?"<div class=\\"pagination\\"><button onclick=\\"goToPage("+(currentPage-1)+")\\" "+(currentPage===0?"disabled":"")+">&#8592; Prev</button><span class=\\"page-info\\">Page "+(currentPage+1)+" of "+totalPages+" &middot; "+sessions.length+" sessions</span><button onclick=\\"goToPage("+(currentPage+1)+")\\" "+(currentPage>=totalPages-1?"disabled":"")+">Next &#8594;</button></div>":"";');
     parts.push('    var ctxHint="Context Health \\u24d8";');

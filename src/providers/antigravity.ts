@@ -105,6 +105,7 @@ export class AntigravityProvider extends BaseProvider {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         totalTokens: estimatedTokens,
+        effectiveContextTokens: estimatedInput,
         mode: 'chat',
         toolCalls: [],
       };
@@ -253,6 +254,7 @@ export class AntigravityProvider extends BaseProvider {
             thinkingTokens: entry.thinking_tokens || 0,
             cacheReadTokens: 0, cacheWriteTokens: 0,
             totalTokens: inputTokens + outputTokens,
+            effectiveContextTokens: inputTokens,
             mode: 'chat', toolCalls: [],
           });
         } else {
@@ -274,7 +276,9 @@ export class AntigravityProvider extends BaseProvider {
             inputTokens: Math.round(tokensPerTurn * 0.3),
             outputTokens: Math.round(tokensPerTurn * 0.7),
             thinkingTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-            totalTokens: tokensPerTurn, mode: 'chat', toolCalls: [],
+            totalTokens: tokensPerTurn,
+            effectiveContextTokens: Math.round(tokensPerTurn * 0.3),
+            mode: 'chat', toolCalls: [],
           });
         }
       }

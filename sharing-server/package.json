@@ -1,0 +1,15 @@
+{
+  "name": "ai-insights-sharing-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted sharing server for AI Insights dashboard snapshots.",
+  "license": "MIT",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

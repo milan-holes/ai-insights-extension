@@ -1,15 +1,17 @@
 {
   "metadata": {
-    "lastUpdated": "2026-05-02",
+    "lastUpdated": "2026-06-11",
     "sources": [
-      { "name": "GitHub Copilot Models & Pricing", "url": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing" }
+      { "name": "GitHub Copilot Models & Pricing", "url": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing" },
+      { "name": "Anthropic Claude Models Overview", "url": "https://platform.claude.com/docs/en/about-claude/models/overview" },
+      { "name": "Anthropic Claude Pricing", "url": "https://platform.claude.com/docs/en/about-claude/pricing" }
     ]
   },
   "pricing": {
     "gpt-4.1": {
       "displayName": "GPT-4.1",
       "provider": "openai",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 2.00,
       "outputCostPerMillion": 8.00,
       "cachedInputCostPerMillion": 0.50,
@@ -45,7 +47,7 @@
     "gpt-5.2": {
       "displayName": "GPT-5.2",
       "provider": "openai",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 1.75,
       "outputCostPerMillion": 14.00,
       "cachedInputCostPerMillion": 0.175,
@@ -54,7 +56,7 @@
     "gpt-5.2-codex": {
       "displayName": "GPT-5.2 Codex",
       "provider": "openai",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 1.75,
       "outputCostPerMillion": 14.00,
       "cachedInputCostPerMillion": 0.175,
@@ -96,6 +98,15 @@
       "cachedInputCostPerMillion": 0.02,
       "category": "Lightweight"
     },
+    "gpt-5.4-long-context": {
+      "displayName": "GPT-5.4 (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 5.00,
+      "outputCostPerMillion": 22.50,
+      "cachedInputCostPerMillion": 0.50,
+      "category": "Versatile"
+    },
     "gpt-5.5": {
       "displayName": "GPT-5.5",
       "provider": "openai",
@@ -103,6 +114,15 @@
       "inputCostPerMillion": 5.00,
       "outputCostPerMillion": 30.00,
       "cachedInputCostPerMillion": 0.50,
+      "category": "Powerful"
+    },
+    "gpt-5.5-long-context": {
+      "displayName": "GPT-5.5 (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 45.00,
+      "cachedInputCostPerMillion": 1.00,
       "category": "Powerful"
     },
     "claude-haiku-4.5": {
@@ -138,7 +158,7 @@
     "claude-sonnet-4": {
       "displayName": "Claude Sonnet 4",
       "provider": "anthropic",
-      "copilotOfficial": false,
+      "copilotOfficial": true,
       "inputCostPerMillion": 3.00,
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
@@ -158,7 +178,7 @@
     "claude-sonnet-4.5": {
       "displayName": "Claude Sonnet 4.5",
       "provider": "anthropic",
-      "copilotOfficial": false,
+      "copilotOfficial": true,
       "inputCostPerMillion": 3.00,
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
@@ -168,7 +188,7 @@
     "claude-sonnet-4.6": {
       "displayName": "Claude Sonnet 4.6",
       "provider": "anthropic",
-      "copilotOfficial": false,
+      "copilotOfficial": true,
       "inputCostPerMillion": 3.00,
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
@@ -205,6 +225,26 @@
       "cacheCreationCostPerMillion": 6.25,
       "category": "Powerful"
     },
+    "claude-opus-4.8": {
+      "displayName": "Claude Opus 4.8",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 5.00,
+      "outputCostPerMillion": 25.00,
+      "cachedInputCostPerMillion": 0.50,
+      "cacheCreationCostPerMillion": 6.25,
+      "category": "Powerful"
+    },
+    "claude-fable-5": {
+      "displayName": "Claude Fable 5",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 1.00,
+      "cacheCreationCostPerMillion": 12.50,
+      "category": "Powerful"
+    },
     "gemini-2.5-pro": {
       "displayName": "Gemini 2.5 Pro",
       "provider": "google",
@@ -217,7 +257,7 @@
     "gemini-3-flash": {
       "displayName": "Gemini 3 Flash",
       "provider": "google",
-      "copilotOfficial": false,
+      "copilotOfficial": true,
       "inputCostPerMillion": 0.50,
       "outputCostPerMillion": 3.00,
       "cachedInputCostPerMillion": 0.05,
@@ -226,16 +266,34 @@
     "gemini-3.1-pro": {
       "displayName": "Gemini 3.1 Pro",
       "provider": "google",
-      "copilotOfficial": false,
+      "copilotOfficial": true,
       "inputCostPerMillion": 2.00,
       "outputCostPerMillion": 12.00,
       "cachedInputCostPerMillion": 0.20,
       "category": "Powerful"
     },
+    "gemini-3.1-pro-long-context": {
+      "displayName": "Gemini 3.1 Pro (Long context)",
+      "provider": "google",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 18.00,
+      "cachedInputCostPerMillion": 0.40,
+      "category": "Powerful"
+    },
+    "gemini-3.5-flash": {
+      "displayName": "Gemini 3.5 Flash",
+      "provider": "google",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 1.50,
+      "outputCostPerMillion": 9.00,
+      "cachedInputCostPerMillion": 0.15,
+      "category": "Lightweight"
+    },
     "grok-code-fast-1": {
       "displayName": "Grok Code Fast 1",
       "provider": "xai",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 0.20,
       "outputCostPerMillion": 1.50,
       "cachedInputCostPerMillion": 0.02,
@@ -243,12 +301,21 @@
     },
     "raptor-mini": {
       "displayName": "Raptor mini",
-      "provider": "openai",
-      "copilotOfficial": false,
+      "provider": "github",
+      "copilotOfficial": true,
       "inputCostPerMillion": 0.25,
       "outputCostPerMillion": 2.00,
       "cachedInputCostPerMillion": 0.025,
-      "category": "Versatile"
+      "category": "Lightweight"
+    },
+    "mai-code-1-flash": {
+      "displayName": "MAI-Code-1-Flash",
+      "provider": "microsoft",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.75,
+      "outputCostPerMillion": 4.50,
+      "cachedInputCostPerMillion": 0.075,
+      "category": "Lightweight"
     },
     "goldeneye": {
       "displayName": "Goldeneye",

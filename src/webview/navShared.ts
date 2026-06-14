@@ -10,20 +10,23 @@ export type NavTab =
   | 'tokenCalculator'
   | 'benchmark'
   | 'claudeAccount'
+  | 'repoAnalysis'
+  | 'replay'
   | 'none';
 
 interface TabDef { id: NavTab; label: string; cmd: string; loadLabel: string; }
 
 const NAV_TABS: TabDef[] = [
-  { id: 'overview',          label: 'Dashboard',        cmd: 'showDashboard',          loadLabel: 'Loading dashboard…'           },
-  { id: 'sessions',          label: 'Sessions',         cmd: 'showSessions',           loadLabel: 'Loading sessions…'            },
-  { id: 'promptHistory',     label: 'Prompts',          cmd: 'showPromptHistory',      loadLabel: 'Loading prompt history…'      },
-  { id: 'usage',             label: 'Workspaces',       cmd: 'showUsageAnalysis',      loadLabel: 'Loading workspace analysis…'  },
-  { id: 'pricing',           label: 'Copilot',          cmd: 'showPricing',            loadLabel: 'Loading GitHub Copilot…'      },
-  { id: 'tokenCalculator',   label: 'Calculator',       cmd: 'showTokenCalculator',    loadLabel: 'Loading token calculator…'    },
-  { id: 'benchmark',         label: 'Benchmark',        cmd: 'showBenchmark',          loadLabel: 'Loading benchmark…'           },
-  { id: 'claudeAccount',     label: 'Claude',           cmd: 'showClaudeAccount',      loadLabel: 'Loading Claude…'              },
-  { id: 'diagnostics',       label: 'Diagnostics',      cmd: 'showDiagnostics',        loadLabel: 'Loading diagnostics…'         },
+  { id: 'overview', label: 'Dashboard', cmd: 'showDashboard', loadLabel: 'Loading dashboard…' },
+  { id: 'sessions', label: 'Sessions', cmd: 'showSessions', loadLabel: 'Loading sessions…' },
+  { id: 'promptHistory', label: 'Prompts', cmd: 'showPromptHistory', loadLabel: 'Loading prompt history…' },
+  { id: 'usage', label: 'Workspaces', cmd: 'showUsageAnalysis', loadLabel: 'Loading workspace analysis…' },
+  { id: 'pricing', label: 'Copilot', cmd: 'showPricing', loadLabel: 'Loading GitHub Copilot…' },
+  { id: 'tokenCalculator', label: 'Calculator', cmd: 'showTokenCalculator', loadLabel: 'Loading token calculator…' },
+  { id: 'benchmark', label: 'Benchmark', cmd: 'showBenchmark', loadLabel: 'Loading benchmark…' },
+  { id: 'claudeAccount', label: 'Claude', cmd: 'showClaudeAccount', loadLabel: 'Loading Claude…' },
+  { id: 'diagnostics', label: 'Diagnostics', cmd: 'showDiagnostics', loadLabel: 'Loading diagnostics…' },
+  // { id: 'repoAnalysis', label: 'Repo Graph', cmd: 'showRepoAnalysis', loadLabel: 'Loading repo analysis…' },
 ];
 
 const RIGHT_NAV_TABS = new Set<NavTab>(['pricing', 'claudeAccount']);
@@ -75,7 +78,7 @@ export function navCss(): string {
 }
 
 /** Topbar HTML with logo image and refresh button. */
-export function navTopbarHtml(logoUri: string, showRefresh = true, loading = false): string {
+export function navTopbarHtml(logoUri: string, showRefresh = true, loading = false, extraRight = ''): string {
   const refreshBtn = showRefresh
     ? `<button id="btnRefresh"${loading ? ' class="is-loading"' : ''}>${loading ? '⟳ Loading…' : '↺ Refresh'}</button>`
     : '';
@@ -85,6 +88,7 @@ export function navTopbarHtml(logoUri: string, showRefresh = true, loading = fal
       <span class="ns-brand-name">AI Insights</span>
     </div>
     <div class="ns-topbar-right">
+      ${extraRight}
       ${refreshBtn}
     </div>
   </div>`;
@@ -123,7 +127,7 @@ export function navPagebarHtml(activeTab: NavTab, title: string): string {
 /** Filter bar with provider chips and period chips (Dashboard only). */
 export function navFilterbarHtml(): string {
   return `  <div class="ns-filterbar">
-    <span class="ns-filter-label">FILTERS</span>
+    <span class="ns-filter-label"></span>
     <div class="ns-filter-group">
       <span class="ns-filter-group-label">PROVIDER</span>
       <div class="prov-switcher" id="provSwitcher">
@@ -172,14 +176,16 @@ export function navJs(): string {
 
 /** All nav-related vscode commands that each panel's onDidReceiveMessage should handle. */
 export const NAV_COMMANDS: Record<string, string> = {
-  showDashboard:        'aiInsights.showDashboard',
-  showUsageAnalysis:    'aiInsights.showUsageAnalysis',
-  showPricing:          'aiInsights.showPricing',
-  showDiagnostics:      'aiInsights.showDiagnostics',
-  showSessions:         'aiInsights.showSessions',
-  showSessionsView:     'aiInsights.showSessions',
-  showPromptHistory:    'aiInsights.showPromptHistory',
-  showTokenCalculator:  'aiInsights.showTokenCalculator',
-  showBenchmark:        'aiInsights.showBenchmark',
-  showClaudeAccount:    'aiInsights.showClaudeAccount',
+  showDashboard: 'aiInsights.showDashboard',
+  showUsageAnalysis: 'aiInsights.showUsageAnalysis',
+  showPricing: 'aiInsights.showPricing',
+  showDiagnostics: 'aiInsights.showDiagnostics',
+  showSessions: 'aiInsights.showSessions',
+  showSessionsView: 'aiInsights.showSessions',
+  showPromptHistory: 'aiInsights.showPromptHistory',
+  showTokenCalculator: 'aiInsights.showTokenCalculator',
+  showBenchmark: 'aiInsights.showBenchmark',
+  showClaudeAccount: 'aiInsights.showClaudeAccount',
+  showRepoAnalysis: 'aiInsights.showRepoAnalysis',
+  showSessionReplay: 'aiInsights.showSessionReplay',
 };

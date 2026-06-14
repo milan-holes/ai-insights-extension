@@ -4,8 +4,10 @@
 import * as vscode from 'vscode';
 import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics } from '../types';
 import { ConnectedGitHubUser } from '../core/githubAuth';
+import { UsageHealthScore } from '../core/usageHealthScore';
 import { providerIcon } from './providerIcons';
 import { navCss, navTopbarHtml, navPagebarHtml, navFilterbarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 interface RoiConfig { hourlyRate: number; tokensPerHourSaved: number; }
 
@@ -44,6 +46,16 @@ function fileStatusIcon(s: FileStatus): string {
 
 function tip(text: string): string {
   return `<span title="${text}" style="cursor:help;color:var(--text-secondary);font-size:0.85em;margin-left:3px;vertical-align:middle;">ⓘ</span>`;
+}
+
+function helpStep(n: number, title: string, body: string): string {
+  return `<div style="display:flex;gap:14px;margin-bottom:16px;">
+    <div style="flex-shrink:0;width:22px;height:22px;border-radius:50%;background:rgba(0,122,255,0.2);border:1px solid rgba(0,122,255,0.4);color:#6db3ff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;">${n}</div>
+    <div style="flex:1;padding-top:2px;">
+      <div style="font-size:12px;font-weight:600;color:#e5e2e1;margin-bottom:4px;">${title}</div>
+      <div style="font-size:12px;color:#8a8fa8;line-height:1.65;">${body}</div>
+    </div>
+  </div>`;
 }
 
 function stageFromThresholds(value: number, thresholds: [number, number, number]): number {
@@ -180,16 +192,33 @@ function buildWorkspaceHealthHtml(reports: RepositoryHygieneReport[]): string {
   </p>`;
 }
 
+export interface ShareInfo {
+  localUrl: string;
+  lanUrls: string[];
+  warning: string | null;
+  qrDataUrl?: string;
+}
+
 export class DashboardProvider {
   static readonly viewType = 'aiInsights.dashboard';
   private static currentPanel: vscode.WebviewPanel | undefined;
 
-  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics): vscode.WebviewPanel {
+  static postSharingInfo(info: ShareInfo | null): void {
+    DashboardProvider.currentPanel?.webview.postMessage(
+      info ? { type: 'sharingStarted', ...info } : { type: 'sharingStopped' },
+    );
+  }
+
+  static postSharingError(error: string): void {
+    DashboardProvider.currentPanel?.webview.postMessage({ type: 'sharingError', error });
+  }
+
+  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore): vscode.WebviewPanel {
     const logoPath = vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png');
 
     if (DashboardProvider.currentPanel) {
       const logoUri = DashboardProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance);
+      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore);
       DashboardProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return DashboardProvider.currentPanel;
     }
@@ -205,7 +234,7 @@ export class DashboardProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance);
+    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore);
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -221,6 +250,8 @@ export class DashboardProvider {
             break;
           case 'connectGitHub': vscode.commands.executeCommand('aiInsights.connectGitHub'); break;
           case 'disconnectGitHub': vscode.commands.executeCommand('aiInsights.disconnectGitHub'); break;
+          case 'startSharing': vscode.commands.executeCommand('aiInsights.startSharing'); break;
+          case 'stopSharing': vscode.commands.executeCommand('aiInsights.stopSharing'); break;
         }
       },
       undefined,
@@ -234,7 +265,7 @@ export class DashboardProvider {
 
   static showLoadingPanel(context: vscode.ExtensionContext): void {
     const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><style>
-      body{background:#0e0e0e;color:#e5e2e1;font-family:system-ui,sans-serif;margin:0;}
+      body{background:#0f1218;color:#e5e2e1;font-family:system-ui,sans-serif;margin:0;}
       .loading-bar{position:fixed;top:0;left:0;right:0;z-index:100;height:3px;background:rgba(0,122,255,0.15);overflow:hidden;}
       .loading-bar-fill{height:100%;width:40%;background:#007AFF;border-radius:0 2px 2px 0;animation:loadslide 1.4s ease-in-out infinite;}
       @keyframes loadslide{0%{transform:translateX(-100%)}60%{transform:translateX(280%)}100%{transform:translateX(280%)}}
@@ -251,7 +282,12 @@ export class DashboardProvider {
     } else {
       const panel = vscode.window.createWebviewPanel(
         DashboardProvider.viewType, 'AI Insights Dashboard',
-        vscode.ViewColumn.One, { enableScripts: false, retainContextWhenHidden: true },
+        vscode.ViewColumn.One,
+        {
+          enableScripts: true,
+          retainContextWhenHidden: true,
+          localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'assets')],
+        },
       );
       panel.webview.html = html;
       panel.onDidDispose(() => { DashboardProvider.currentPanel = undefined; }, null, context.subscriptions);
@@ -259,7 +295,7 @@ export class DashboardProvider {
     }
   }
 
-  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics): string {
+  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore): string {
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' :
       n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : n.toString();
     const fmtCost = (n: number) => '$' + n.toFixed(4);
@@ -293,6 +329,7 @@ export class DashboardProvider {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:20px;">
         <div class="mini-card"><div class="mini-label">Copilot MTD Spend</div><div class="mini-val data-text">${fmtCost(b.mtdSpend)}</div></div>
         <div class="mini-card"><div class="mini-label">Budget Left</div><div class="mini-val data-text" style="color:${budgetBarColor}">${fmtCost(b.creditsRemaining)}</div></div>
+        <div class="mini-card"><div class="mini-label">Hourly Burn Rate</div><div class="mini-val data-text">${fmtCost(b.hourlyBurnRate)}/hr</div></div>
         <div class="mini-card"><div class="mini-label">Daily Burn Rate</div><div class="mini-val data-text">${fmtCost(b.dailyBurnRate)}/day</div></div>
         <div class="mini-card"><div class="mini-label">Days Until Exhausted</div><div class="mini-val data-text">${exhaustedText}</div></div>
         <div class="mini-card"><div class="mini-label">Projected Month-End</div><div class="mini-val data-text" style="color:${projOverage ? '#FF4D4D' : '#39FF14'}">${fmtCost(b.projectedMonthEnd)}</div></div>
@@ -328,7 +365,7 @@ export class DashboardProvider {
         <div class="mini-card"><div class="mini-label">Cache Write Tokens</div><div class="mini-val data-text">${fmt(ch.totalCacheWriteTokens)}</div></div>
         <div class="mini-card"><div class="mini-label">Read/Write Ratio</div><div class="mini-val data-text">${ch.cacheWriteReadRatio.toFixed(1)}×</div></div>
       </div>
-      ${ch.cacheHitRate < 0.1 && ch.totalCacheWriteTokens === 0 ? `<p style="font-size:0.85em;color:var(--text-secondary);">ℹ️ No cache data detected. Prompt caching is available for Claude and GPT-4o — see provider docs to enable it.</p>` : ''}
+      ${ch.cacheHitRate < 0.1 && ch.totalCacheWriteTokens === 0 ? `<p style="font-size:0.85em;color:var(--text-secondary);">ℹ️ No cache data detected. Prompt caching is available for Claude and GPT-4o - see provider docs to enable it.</p>` : ''}
     </div>`;
 
     // ── Cache efficiency card ──────────────────────────────────────────────
@@ -349,7 +386,7 @@ export class DashboardProvider {
       const name = `${providerIcon(id)} ${label}`;
       const cHit = (p.cacheReadTokens > 0 || p.cacheWriteTokens > 0)
         ? Math.round((p.cacheReadTokens / (p.inputTokens + p.cacheReadTokens)) * 100) + '%'
-        : '—';
+        : '-';
       return `<tr>
         <td class="data-text">${name}</td>
         <td class="data-text">${fmt(p.totalTokens)}</td>
@@ -418,7 +455,7 @@ export class DashboardProvider {
     const allChartDataJson = JSON.stringify(allChartData);
 
     // ── Per-provider period data for dynamic table updates ────────────────────
-    const providerIds = ['copilot', 'claudeCode', 'codex', 'antigravity'] as const;
+    const providerIds = ['copilot', 'claudeCode', 'codex', 'antigravity', 'jetbrainsAI', 'visualStudio'] as const;
     const slicePeriod = (p: import('../types').ProviderMetrics) => ({
       totalTokens: p.totalTokens,
       inputTokens: p.inputTokens,
@@ -703,22 +740,7 @@ export class DashboardProvider {
 <title>AI Insights Dashboard</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap');
-  :root {
-    --bg-base: #0e0e0e;
-    --bg-surface: #1a1919;
-    --bg-surface-high: #201f1f;
-    --text-primary: #e5e2e1;
-    --text-secondary: #c1c6d7;
-    --primary: #007AFF;
-    --primary-glow: rgba(0, 122, 255, 0.2);
-    --border: rgba(255, 255, 255, 0.05);
-    --stage-1: #FF4D4D;
-    --stage-2: #f093fb;
-    --stage-3: #007AFF;
-    --stage-4: #39FF14;
-    --font-primary: 'Inter', system-ui, sans-serif;
-    --font-data: 'Space Grotesk', 'JetBrains Mono', monospace;
-  }
+  ${designTokensCss()}
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: var(--font-primary); background: var(--bg-base); color: var(--text-primary); padding: 0; line-height: 1.6; }
   .data-text { font-family: var(--font-data); }
@@ -784,10 +806,122 @@ export class DashboardProvider {
     <div style="width:36px;height:36px;border:3px solid rgba(0,122,255,0.25);border-top-color:#007AFF;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
     <div id="navOverlayText" style="color:#6db3ff;font-size:13px;font-weight:500;letter-spacing:0.2px;"></div>
   </div>
-  ${navTopbarHtml(logoUri, true, refreshing)}
+  ${navTopbarHtml(logoUri, true, refreshing, '<button id="btnShare" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">⬆ Share</button>')}
   ${refreshing ? '<div class="loading-bar"><div class="loading-bar-fill"></div></div><div class="loading-banner"><div class="loading-spinner"></div>Refreshing dashboard…</div>' : ''}
   ${navPagebarHtml('overview', 'Dashboard')}
   ${navFilterbarHtml()}
+
+  <!-- ── Share info panel (shown when sharing is active) ─────── -->
+  <div id="sharePanel" style="display:none;background:rgba(0,122,255,0.07);border-bottom:1px solid rgba(0,122,255,0.2);padding:14px 32px;">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:260px;">
+        <div style="font-size:12px;font-weight:600;color:#6db3ff;margin-bottom:10px;letter-spacing:0.04em;text-transform:uppercase;">⬆ Sharing Active — expires in 30 min</div>
+        <div id="shareUrlRows" style="display:flex;flex-direction:column;gap:7px;"></div>
+        <div id="shareWarning" style="display:none;margin-top:10px;font-size:11.5px;color:#f9e2af;background:rgba(249,226,175,0.07);border:1px solid rgba(249,226,175,0.2);border-radius:5px;padding:8px 12px;line-height:1.55;"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0;align-items:flex-start;">
+        <button id="btnShowQr" style="display:none;padding:5px 12px;border-radius:6px;border:1px solid rgba(0,122,255,0.35);background:rgba(0,122,255,0.1);color:#6db3ff;cursor:pointer;font-size:12px;font-weight:500;height:28px;white-space:nowrap;">⬛ QR Code</button>
+        <button id="btnShareHelp" style="padding:5px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);color:#8a8fa8;cursor:pointer;font-size:12px;font-weight:500;height:28px;white-space:nowrap;">? Help</button>
+        <button id="btnStopSharing" style="padding:5px 12px;border-radius:6px;border:1px solid rgba(255,77,77,0.35);background:rgba(255,77,77,0.1);color:#ff8a8a;cursor:pointer;font-size:12px;font-weight:500;height:28px;white-space:nowrap;">✕ Stop Sharing</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── QR code modal ──────────────────────────────────────────── -->
+  <div id="qrModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+    <div style="background:#1a1919;border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:28px 32px;text-align:center;max-width:320px;width:90%;">
+      <div style="font-size:13px;font-weight:600;color:#e5e2e1;margin-bottom:4px;">Scan to open on your device</div>
+      <div id="qrUrlLabel" style="font-size:11px;color:#8a8fa8;margin-bottom:18px;word-break:break-all;"></div>
+      <img id="qrImage" src="" alt="QR Code" style="width:200px;height:200px;border-radius:8px;display:block;margin:0 auto 18px;" />
+      <button id="btnCloseQr" style="padding:6px 20px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e5e2e1;cursor:pointer;font-size:12px;">Close</button>
+    </div>
+  </div>
+
+  <!-- ── Share help modal ─────────────────────────────────────── -->
+  <div id="shareHelpModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.75);align-items:flex-start;justify-content:center;overflow-y:auto;padding:40px 16px;">
+    <div style="background:#1a1919;border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:28px 32px;max-width:580px;width:100%;margin:auto;position:relative;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+        <div style="font-size:15px;font-weight:700;color:#e5e2e1;">How to share with another device</div>
+        <button id="btnCloseShareHelp" style="background:none;border:none;color:#8a8fa8;cursor:pointer;font-size:18px;line-height:1;padding:2px 6px;">✕</button>
+      </div>
+
+      <!-- Scenario tabs -->
+      <div style="display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap;">
+        <button class="help-tab active" data-tab="normal" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(0,122,255,0.4);background:rgba(0,122,255,0.15);color:#6db3ff;cursor:pointer;font-size:12px;font-weight:500;">Normal / macOS / Linux</button>
+        <button class="help-tab" data-tab="wsl" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#8a8fa8;cursor:pointer;font-size:12px;font-weight:500;">WSL (Windows)</button>
+        <button class="help-tab" data-tab="ssh" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:#8a8fa8;cursor:pointer;font-size:12px;font-weight:500;">SSH Remote</button>
+      </div>
+
+      <!-- Normal tab -->
+      <div class="help-pane" id="help-tab-normal">
+        ${helpStep(1, 'Find your LAN IP', `
+          <b>macOS:</b> System Settings → Network → Wi-Fi → IP Address<br>
+          <b>Linux:</b> run <code>ip route get 1 | awk '{print $7; exit}'</code><br>
+          <b>Windows (native):</b> run <code>ipconfig</code> → look for <em>IPv4 Address</em> under Wi-Fi
+        `)}
+        ${helpStep(2, 'Set the host in settings', `
+          Open VS Code settings and set <code>aiInsights.shareHost</code> to the IP from step 1 (e.g. <code>192.168.1.42</code>).
+          Then click Share again — the generated URL will use that IP.
+        `)}
+        ${helpStep(3, 'Open the firewall port', `
+          <b>macOS:</b> System Settings → Network → Firewall → allow incoming on the share port, or temporarily turn off the firewall.<br>
+          <b>Linux:</b> <code>sudo ufw allow &lt;PORT&gt;/tcp</code>
+        `)}
+        ${helpStep(4, 'Scan the QR code', `
+          Click <b>⬛ QR Code</b> — scan it with your phone. Both devices must be on the same Wi-Fi network.
+        `)}
+      </div>
+
+      <!-- WSL tab -->
+      <div class="help-pane" id="help-tab-wsl" style="display:none;">
+        ${helpStep(1, 'Fix the share port', `
+          Set <code>aiInsights.sharePort</code> to a fixed number, e.g. <code>57312</code>. This lets you configure a permanent Windows firewall rule without re-running the command every session.
+        `)}
+        ${helpStep(2, 'Find your WSL internal IP', `
+          In your WSL terminal:<br>
+          <code>hostname -I | awk '{print $1}'</code><br>
+          You'll get something like <code>172.26.x.x</code>. This changes on each WSL restart.
+        `)}
+        ${helpStep(3, 'Find your Windows LAN IP', `
+          In PowerShell on Windows:<br>
+          <code>ipconfig | findstr "IPv4"</code><br>
+          Use the IP under <em>Wireless LAN adapter Wi-Fi</em>, e.g. <code>192.168.1.42</code>.
+        `)}
+        ${helpStep(4, 'Forward the port (PowerShell Admin)', `
+          Replace <code>WSL_IP</code> and <code>PORT</code> with your values:<br>
+          <code>netsh interface portproxy add v4tov4 listenport=PORT listenaddress=0.0.0.0 connectport=PORT connectaddress=WSL_IP</code><br>
+          <code>New-NetFirewallRule -DisplayName "AI Insights Share" -Direction Inbound -LocalPort PORT -Protocol TCP -Action Allow</code><br><br>
+          <b>Shortcut:</b> click <b>Copy Windows Command</b> in the share bar — it fills in your current WSL IP and port automatically.
+        `)}
+        ${helpStep(5, 'Set the host and scan', `
+          Set <code>aiInsights.shareHost</code> to your Windows LAN IP (<code>192.168.1.42</code>). Click <b>⬛ QR Code</b> and scan from your phone.
+        `)}
+        <div style="margin-top:14px;padding:10px 14px;background:rgba(249,226,175,0.06);border:1px solid rgba(249,226,175,0.18);border-radius:6px;font-size:11.5px;color:#f9e2af;line-height:1.6;">
+          <b>Note:</b> WSL IP changes on every WSL restart. Re-run step 4 (or click <b>Copy Windows Command</b> again) whenever it changes.
+          With a fixed <code>aiInsights.sharePort</code> the firewall rule is permanent — only the <code>netsh portproxy</code> line needs to be re-run.
+        </div>
+      </div>
+
+      <!-- SSH Remote tab -->
+      <div class="help-pane" id="help-tab-ssh" style="display:none;">
+        ${helpStep(1, 'The server runs on the remote machine', `
+          When VS Code is connected via SSH, the share server listens on the <em>remote</em> host, not your laptop. Your phone must be able to reach that host directly.
+        `)}
+        ${helpStep(2, 'Option A — remote host is on your LAN', `
+          Find the remote host IP (<code>hostname -I | awk '{print $1}'</code> on the remote). Set <code>aiInsights.shareHost</code> to that IP. Open the firewall port on the remote (<code>sudo ufw allow &lt;PORT&gt;/tcp</code>). Scan the QR code.
+        `)}
+        ${helpStep(3, 'Option B — remote host is behind NAT / cloud VM', `
+          Forward the port through your SSH tunnel. In a local terminal:<br>
+          <code>ssh -L 0.0.0.0:PORT:localhost:PORT user@remote-host</code><br>
+          Then set <code>aiInsights.shareHost</code> to your <em>laptop's</em> LAN IP and open that port in your laptop firewall. The QR code will then work on your phone.
+        `)}
+        ${helpStep(4, 'Scan', `
+          Click <b>⬛ QR Code</b> and scan. Make sure your phone and the reachable host are on the same network (or the port is publicly exposed).
+        `)}
+      </div>
+
+    </div>
+  </div>
 
   <!-- ── Content area ──────────────────────────────────────────── -->
   <div class="ns-content">
@@ -801,7 +935,7 @@ export class DashboardProvider {
     const roiColor = roiMult >= 10 ? 'var(--stage-4)' : roiMult >= 3 ? '#f9e2af' : 'var(--stage-1)';
     const fmtH = (h: number) => h < 1 ? `${Math.round(h * 60)}min` : `${h.toFixed(1)}h`;
     return `<div class="section" style="margin-bottom:24px;">
-      <h2 id="devImpactTitle">⏱ Developer Impact — This Month</h2>
+      <h2 id="devImpactTitle">⏱ Developer Impact - This Month</h2>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;">
         <div class="mini-card"><div class="mini-label">Hours Saved</div><div class="mini-val data-text" id="diHours" style="color:var(--stage-4);">~${fmtH(hoursSaved)}</div></div>
         <div class="mini-card"><div class="mini-label">Value Generated</div><div class="mini-val data-text" id="diValue" style="color:var(--stage-4);">~$${valueGenerated.toFixed(0)}</div></div>
@@ -811,20 +945,64 @@ export class DashboardProvider {
     </div>`;
   })()}
 
+  ${healthScore ? (() => {
+    const hs = healthScore;
+    const compRows = hs.components.map(c => {
+      const barPct = c.maxPoints > 0 ? Math.round((c.points / c.maxPoints) * 100) : 0;
+      const barColor = barPct >= 80 ? '#39FF14' : barPct >= 50 ? '#f9e2af' : '#f38ba8';
+      const scoreText = c.score < 0 ? '-' : `${c.score}/100`;
+      return `<tr>
+        <td style="font-size:0.85em;">${c.label}</td>
+        <td class="data-text" style="text-align:right;font-size:0.82em;color:var(--text-secondary);">${scoreText}</td>
+        <td class="data-text" style="text-align:right;font-size:0.85em;font-weight:600;">${c.points}/${c.maxPoints}</td>
+        <td style="width:80px;padding-right:8px;">
+          <div style="background:rgba(255,255,255,0.08);border-radius:2px;height:4px;overflow:hidden;">
+            <div style="background:${barColor};width:${barPct}%;height:100%;"></div>
+          </div>
+        </td>
+        <td style="font-size:0.78em;color:var(--text-secondary);">${c.detail}</td>
+      </tr>`;
+    }).join('');
+    const recItems = hs.topRecommendations.map(r => `<li style="margin-bottom:5px;">${r}</li>`).join('');
+    return `<div class="section" style="border-top:3px solid ${hs.gradeColor};margin-bottom:20px;">
+      <div style="display:flex;align-items:center;gap:20px;margin-bottom:16px;">
+        <div style="text-align:center;min-width:64px;">
+          <div style="font-size:3em;font-weight:800;line-height:1;color:${hs.gradeColor};">${hs.grade}</div>
+          <div style="font-size:0.72em;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-secondary);margin-top:2px;">AI Health</div>
+        </div>
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div style="font-size:1.15em;font-weight:600;">Usage Health Score &nbsp;<span class="data-text" style="color:${hs.gradeColor};">${hs.overall}/100</span></div>
+          </div>
+          <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:8px;overflow:hidden;max-width:320px;">
+            <div style="background:${hs.gradeColor};width:${hs.overall}%;height:100%;border-radius:4px;transition:width 0.4s ease;"></div>
+          </div>
+        </div>
+        <div style="min-width:200px;">
+          <table style="width:100%;">${compRows}</table>
+        </div>
+      </div>
+      ${recItems ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;">
+        <div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary);font-weight:600;margin-bottom:8px;">Recommendations</div>
+        <ul style="list-style:none;padding:0;margin:0;font-size:0.85em;color:var(--text-secondary);">${recItems}</ul>
+      </div>` : ''}
+    </div>`;
+  })() : ''}
+
   <div id="cards-overall" class="cards">
     <div class="card" style="border-top: 2px solid var(--primary);">
-      <div class="card-label" id="card1-label">Tokens — This Month</div>
+      <div class="card-label" id="card1-label">Tokens - This Month</div>
       <div class="card-value data-text" id="card1-value">${fmt(m.currentMonth.totalTokens)}</div>
       <div class="card-sub" id="card1-sub">${m.currentMonth.sessions} sessions · ${m.currentMonth.interactions} interactions</div>
       <div class="card-sub" style="margin-top:6px" id="card1-diff">vs last month ${fmtDiff(m.currentMonth.totalTokens, m.lastMonth.totalTokens)}</div>
     </div>
     <div class="card">
-      <div class="card-label" id="card2-label">Sessions — This Month</div>
+      <div class="card-label" id="card2-label">Sessions - This Month</div>
       <div class="card-value data-text" id="card2-value">${m.currentMonth.sessions}</div>
       <div class="card-sub" id="card2-diff">vs last month ${fmtDiff(m.currentMonth.sessions, m.lastMonth.sessions)}</div>
     </div>
     <div class="card">
-      <div class="card-label" id="card3-label">Interactions — This Month</div>
+      <div class="card-label" id="card3-label">Interactions - This Month</div>
       <div class="card-value data-text" id="card3-value">${m.currentMonth.interactions}</div>
       <div class="card-sub" id="card3-diff">vs last month ${fmtDiff(m.currentMonth.interactions, m.lastMonth.interactions)}</div>
     </div>
@@ -880,7 +1058,7 @@ export class DashboardProvider {
 
   <!-- ── Token Breakdown ──────────────────────────────────────────────────── -->
   <div class="section">
-    <h2 id="tokenTableTitle">📊 Token Breakdown — This Month</h2>
+    <h2 id="tokenTableTitle">📊 Token Breakdown - This Month</h2>
     <table>
       <thead>
         <tr><th>Metric</th><th id="tokenColA">📆 This Month</th><th id="tokenColB">📅 Last Month</th></tr>
@@ -892,7 +1070,7 @@ export class DashboardProvider {
   <!-- ── Interaction Modes widget ─────────────────────────────────── -->
   <div class="section">
     <h2>🎯 Interaction Modes</h2>
-    <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 18px">How you use AI tools — Ask (chat), Edit (code edits), Agent (autonomous), CLI</p>
+    <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 18px">How you use AI tools - Ask (chat), Edit (code edits), Agent (autonomous), CLI</p>
     <table>
       <thead><tr>
         <th>Mode</th>
@@ -906,7 +1084,7 @@ export class DashboardProvider {
 
   <!-- ── Provider breakdown ─────────────────────────────────────────── -->
   <div class="section" id="section-providers">
-    <h2 id="providerTableTitle">🤖 Usage by Provider — This Month</h2>
+    <h2 id="providerTableTitle">🤖 Usage by Provider - This Month</h2>
     <table>
       <thead><tr><th>Provider</th><th>Tokens</th><th>Sessions</th><th>Interactions</th><th>Cache Hit</th></tr></thead>
       <tbody id="providerTbody"></tbody>
@@ -917,7 +1095,7 @@ export class DashboardProvider {
   <!-- ── Provider Cost per 1K Output ─────────────────────────────── -->
   <div class="section" id="section-provider-cost">
     <h2>💸 Provider Cost per 1K Output Tokens</h2>
-    <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 16px">Efficiency comparison — lower $/1K = more output value per dollar spent</p>
+    <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 16px">Efficiency comparison - lower $/1K = more output value per dollar spent</p>
     <table>
       <thead><tr><th>Provider</th><th style="text-align:right">Total Cost</th><th style="text-align:right">Output Tokens</th><th style="text-align:right">$/1K Output</th></tr></thead>
       <tbody id="provCostTbody"></tbody>
@@ -948,7 +1126,7 @@ export class DashboardProvider {
       const lbl = pct >= 30 ? 'Good' : pct >= 10 ? 'Fair' : a.triggered === 0 ? 'No data yet' : 'Low';
       return `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px;">
-      <div class="mini-card"><div class="mini-label">Acceptance Rate</div><div class="mini-val data-text" style="font-size:1.6em;color:${col};">${a.triggered === 0 ? '—' : pct + '%'}</div><div style="font-size:0.75em;color:${col};margin-top:4px;">${lbl}</div></div>
+      <div class="mini-card"><div class="mini-label">Acceptance Rate</div><div class="mini-val data-text" style="font-size:1.6em;color:${col};">${a.triggered === 0 ? '-' : pct + '%'}</div><div style="font-size:0.75em;color:${col};margin-top:4px;">${lbl}</div></div>
       <div class="mini-card"><div class="mini-label">Completions Accepted</div><div class="mini-val data-text">${a.accepted.toLocaleString()}</div></div>
       <div class="mini-card"><div class="mini-label">Ghost-text Triggers</div><div class="mini-val data-text">${a.triggered.toLocaleString()}</div></div>
     </div>
@@ -963,7 +1141,7 @@ export class DashboardProvider {
 
   <!-- ── MCP Tools ───────────────────────────────────────────────────── -->
   <div class="section">
-    <h2 id="mcpTitle">🔌 MCP Tools — This Month</h2>
+    <h2 id="mcpTitle">🔌 MCP Tools - This Month</h2>
     <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 16px">Model Context Protocol server calls</p>
     <div style="margin-bottom:6px;font-size:0.82em;color:var(--text-secondary)" id="mcpTotal"></div>
     <table>
@@ -1084,13 +1262,38 @@ export class DashboardProvider {
         });
       }
 
+      // Share button
+      var shareBtn = document.getElementById('btnShare');
+      if (shareBtn) {
+        shareBtn.addEventListener('click', function() {
+          shareBtn.textContent = '⬆ Starting…';
+          shareBtn.style.opacity = '0.6';
+          shareBtn.style.pointerEvents = 'none';
+          // Show connecting state immediately so the user knows the click registered
+          var sp = document.getElementById('sharePanel');
+          var sr = document.getElementById('shareUrlRows');
+          if (sp && sr) {
+            sr.innerHTML = '<span style="font-size:12px;color:var(--text-secondary);">Starting local server…</span>';
+            sp.style.display = 'block';
+          }
+          window.vscode.postMessage({ command: 'startSharing' });
+          // Restore button after timeout regardless of outcome
+          setTimeout(function() {
+            shareBtn.textContent = '⬆ Share';
+            shareBtn.style.opacity = '';
+            shareBtn.style.pointerEvents = '';
+          }, 8000);
+        });
+      }
+
       // Reset on visibility change (backup)
       document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') { clearAllLoading(); }
       });
     })();
     var dashChart = null;
-    (function() {
+    try { (function() {
+      if (typeof Chart === 'undefined') { throw new Error('Chart.js not loaded'); }
       var allData = ${allChartDataJson};
       Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
       Chart.defaults.color = '#c1c6d7';
@@ -1193,7 +1396,7 @@ export class DashboardProvider {
           updateWidgets(prov);
         });
       });
-    })();
+    })(); } catch(e) { console.error('[AI Insights] Chart.js failed to load:', e); }
 
     // ── Global period selector ─────────────────────────────────────────────
     (function() {
@@ -1293,13 +1496,13 @@ export class DashboardProvider {
         function row(icon, name, val, cmpVal) {
           var cmpCell = cpd
             ? '<td class="data-text">'+fmtN2(cmpVal || 0)+'</td>'
-            : '<td style="color:var(--text-secondary)">—</td>';
+            : '<td style="color:var(--text-secondary)">-</td>';
           return '<tr><td>'+icon+' '+name+'</td><td class="data-text">'+fmtN2(val || 0)+'</td>'+cmpCell+'</tr>';
         }
         function rowRaw(icon, name, val, cmpVal) {
           var cmpCell = cpd
             ? '<td class="data-text">'+(cmpVal || 0)+'</td>'
-            : '<td style="color:var(--text-secondary)">—</td>';
+            : '<td style="color:var(--text-secondary)">-</td>';
           return '<tr><td>'+icon+' '+name+'</td><td class="data-text">'+(val || 0)+'</td>'+cmpCell+'</tr>';
         }
         var cp = cpd || {};
@@ -1444,6 +1647,149 @@ export class DashboardProvider {
           btn.classList.add('active');
           setGlobalPeriod(btn.getAttribute('data-period'));
         });
+      });
+    })();
+
+    /* ── Share panel ─────────────────────────────────────────── */
+    (function() {
+      var sharePanel = document.getElementById('sharePanel');
+      var shareUrlRows = document.getElementById('shareUrlRows');
+      var shareWarning = document.getElementById('shareWarning');
+      var stopBtn = document.getElementById('btnStopSharing');
+      var qrBtn = document.getElementById('btnShowQr');
+      var qrModal = document.getElementById('qrModal');
+      var qrImage = document.getElementById('qrImage');
+      var qrUrlLabel = document.getElementById('qrUrlLabel');
+      var closeQrBtn = document.getElementById('btnCloseQr');
+      var helpBtn = document.getElementById('btnShareHelp');
+      var helpModal = document.getElementById('shareHelpModal');
+      var closeHelpBtn = document.getElementById('btnCloseShareHelp');
+      var currentQrDataUrl = null;
+      var currentQrUrl = null;
+
+      if (stopBtn) {
+        stopBtn.addEventListener('click', function() {
+          window.vscode.postMessage({ command: 'stopSharing' });
+          if (sharePanel) { sharePanel.style.display = 'none'; }
+          if (qrModal) { qrModal.style.display = 'none'; }
+          if (helpModal) { helpModal.style.display = 'none'; }
+        });
+      }
+
+      if (helpBtn) {
+        helpBtn.addEventListener('click', function() {
+          if (helpModal) { helpModal.style.display = 'flex'; }
+        });
+      }
+      if (closeHelpBtn) {
+        closeHelpBtn.addEventListener('click', function() {
+          if (helpModal) { helpModal.style.display = 'none'; }
+        });
+      }
+      if (helpModal) {
+        helpModal.addEventListener('click', function(e) {
+          if (e.target === helpModal) { helpModal.style.display = 'none'; }
+        });
+      }
+      document.querySelectorAll('.help-tab').forEach(function(tab) {
+        tab.addEventListener('click', function() {
+          var target = tab.getAttribute('data-tab');
+          document.querySelectorAll('.help-tab').forEach(function(t) {
+            var active = t.getAttribute('data-tab') === target;
+            t.style.background = active ? 'rgba(0,122,255,0.15)' : 'rgba(255,255,255,0.04)';
+            t.style.borderColor = active ? 'rgba(0,122,255,0.4)' : 'rgba(255,255,255,0.1)';
+            t.style.color = active ? '#6db3ff' : '#8a8fa8';
+          });
+          document.querySelectorAll('.help-pane').forEach(function(pane) {
+            pane.style.display = pane.id === 'help-tab-' + target ? 'block' : 'none';
+          });
+        });
+      });
+
+      if (qrBtn) {
+        qrBtn.addEventListener('click', function() {
+          if (!currentQrDataUrl || !qrModal) { return; }
+          if (qrImage) { qrImage.src = currentQrDataUrl; }
+          if (qrUrlLabel) { qrUrlLabel.textContent = currentQrUrl || ''; }
+          qrModal.style.display = 'flex';
+        });
+      }
+
+      if (closeQrBtn) {
+        closeQrBtn.addEventListener('click', function() {
+          if (qrModal) { qrModal.style.display = 'none'; }
+        });
+      }
+
+      if (qrModal) {
+        qrModal.addEventListener('click', function(e) {
+          if (e.target === qrModal) { qrModal.style.display = 'none'; }
+        });
+      }
+
+      function makeUrlRow(label, url) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        var labelEl = document.createElement('span');
+        labelEl.style.cssText = 'font-size:11px;color:var(--text-secondary);min-width:110px;flex-shrink:0;';
+        labelEl.textContent = label;
+        var codeEl = document.createElement('code');
+        codeEl.style.cssText = 'flex:1;font-size:12px;color:#e5e2e1;background:rgba(255,255,255,0.06);padding:3px 8px;border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        codeEl.textContent = url;
+        var copyBtn = document.createElement('button');
+        copyBtn.style.cssText = 'flex-shrink:0;padding:3px 9px;border-radius:4px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-secondary);cursor:pointer;font-size:11px;';
+        copyBtn.textContent = 'Copy';
+        copyBtn.addEventListener('click', function() {
+          navigator.clipboard.writeText(url).then(function() {
+            copyBtn.textContent = '✓';
+            setTimeout(function() { copyBtn.textContent = 'Copy'; }, 1500);
+          });
+        });
+        row.appendChild(labelEl);
+        row.appendChild(codeEl);
+        row.appendChild(copyBtn);
+        return row;
+      }
+
+      window.addEventListener('message', function(event) {
+        var msg = event.data;
+        if (!sharePanel || !shareUrlRows) { return; }
+        if (msg.type !== 'sharingStarted' && msg.type !== 'sharingStopped' && msg.type !== 'sharingError') { return; }
+
+        if (msg.type === 'sharingStarted') {
+          shareUrlRows.innerHTML = '';
+          shareUrlRows.appendChild(makeUrlRow('This computer:', msg.localUrl));
+          (msg.lanUrls || []).forEach(function(url, i) {
+            shareUrlRows.appendChild(makeUrlRow(i === 0 ? 'On your network:' : 'Alt. LAN URL:', url));
+          });
+          if (msg.warning && shareWarning) {
+            shareWarning.textContent = msg.warning;
+            shareWarning.style.display = 'block';
+          } else if (shareWarning) {
+            shareWarning.style.display = 'none';
+          }
+          if (msg.qrDataUrl && qrBtn) {
+            currentQrDataUrl = msg.qrDataUrl;
+            currentQrUrl = (msg.lanUrls && msg.lanUrls[0]) || msg.localUrl;
+            qrBtn.style.display = 'inline-flex';
+          } else if (qrBtn) {
+            qrBtn.style.display = 'none';
+          }
+          sharePanel.style.display = 'block';
+        }
+
+        if (msg.type === 'sharingError') {
+          shareUrlRows.innerHTML = '<span style="font-size:12px;color:#ff8a8a;">⚠ ' + (msg.error || 'Unknown error') + '</span>';
+          if (qrBtn) { qrBtn.style.display = 'none'; }
+          sharePanel.style.display = 'block';
+        }
+
+        if (msg.type === 'sharingStopped') {
+          sharePanel.style.display = 'none';
+          if (qrModal) { qrModal.style.display = 'none'; }
+          if (qrBtn) { qrBtn.style.display = 'none'; }
+          currentQrDataUrl = null;
+        }
       });
     })();
   </script>

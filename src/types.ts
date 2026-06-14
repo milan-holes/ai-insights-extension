@@ -5,7 +5,7 @@
  */
 
 /** Supported AI provider identifiers */
-export type ProviderId = 'copilot' | 'antigravity' | 'claudeCode' | 'codex';
+export type ProviderId = 'copilot' | 'antigravity' | 'claudeCode' | 'codex' | 'jetbrainsAI' | 'visualStudio';
 
 /** A single interaction (request + response) within a session */
 export interface Interaction {
@@ -17,6 +17,11 @@ export interface Interaction {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
+  /**
+   * Actual context window size for this turn: inputTokens + cacheReadTokens + cacheWriteTokens.
+   * Use this (not inputTokens alone) for context-size analysis in cached sessions.
+   */
+  effectiveContextTokens: number;
   /** The interaction mode: chat, edit, agent, etc. */
   mode: string;
   /** Tool calls made during this interaction */
@@ -27,6 +32,10 @@ export interface Interaction {
   fileAccesses?: Array<{ tool: string; path: string }>;
   /** First ~200 chars of the user message that triggered this interaction */
   promptPreview?: string;
+  /** Web search requests made by server-side tools in this interaction */
+  webSearchRequests?: number;
+  /** Web fetch requests made by server-side tools in this interaction */
+  webFetchRequests?: number;
   /** True for synthetic compaction-boundary events (not real API turns) */
   isCompactionEvent?: boolean;
   /** Whether compaction was triggered automatically or manually */
@@ -63,6 +72,18 @@ export interface Session {
   title?: string;
   /** Estimated cost in USD for this session */
   estimatedCostUsd?: number;
+  /**
+   * MCP server names active during this session (e.g. "claude_ai_Gmail").
+   * Parsed from deferred_tools_delta attachments in Claude Code sessions.
+   */
+  activeMcpServers?: string[];
+  /**
+   * Token count of the first cache-write in the session — approximates the static overhead
+   * (system prompt + CLAUDE.md + MCP tool schemas) before any conversation history accumulates.
+   */
+  estimatedBaseContextTokens?: number;
+  /** Peak effective context size seen in any turn: max(inputTokens + cacheReadTokens + cacheWriteTokens). */
+  peakEffectiveContextTokens?: number;
 }
 
 /** Aggregated daily usage for a provider */
@@ -162,6 +183,8 @@ export interface BudgetMetrics {
   mtdSpend: number;
   creditsRemaining: number;
   dailyBurnRate: number;
+  /** USD/hour averaged over hours active today (today spend / elapsed hours) */
+  hourlyBurnRate: number;
   daysElapsed: number;
   daysInMonth: number;
   daysRemaining: number;

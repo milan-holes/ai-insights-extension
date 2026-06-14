@@ -65,6 +65,11 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
   }
 
   // ── Base score ─────────────────────────────────────────────────────────────
+  // Use peak effective context (input + cacheRead + cacheWrite) — not totalInputTokens, which
+  // is near-zero for cached Claude Code sessions and gives incorrect context-size signals.
+  const peakEffectiveContext = session.peakEffectiveContextTokens
+    ?? interactions.reduce((m, i) => Math.max(m, i.effectiveContextTokens ?? (i.inputTokens + i.cacheReadTokens + i.cacheWriteTokens)), 0);
+
   let score = 0;
   if (turnsCount > 80) { score += 2; }
   else if (turnsCount > 40) { score += 1; }
@@ -79,8 +84,8 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
   if (outputDeclineFactor < 0.4) { score += 2; }
   else if (outputDeclineFactor < 0.65) { score += 1; }
 
-  if (session.totalInputTokens > 200_000) { score += 2; }
-  else if (session.totalInputTokens > 80_000) { score += 1; }
+  if (peakEffectiveContext > 160_000) { score += 2; }
+  else if (peakEffectiveContext > 80_000) { score += 1; }
 
   score = Math.min(10, score);
   const label = score >= 7 ? 'stale' : score >= 4 ? 'warning' : 'healthy';
@@ -116,7 +121,7 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
 
   // ── Overload signals ───────────────────────────────────────────────────────
   const overloadSignals = detectOverloadSignals(
-    session, turnsCount, sessionAgeMinutes, inputBloatFactor, outputDeclineFactor,
+    session, turnsCount, sessionAgeMinutes, inputBloatFactor, outputDeclineFactor, peakEffectiveContext,
   );
 
   // ── Restart recommendation ─────────────────────────────────────────────────
@@ -136,10 +141,14 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
 
   // ── Tier-1 metrics ─────────────────────────────────────────────────────────
   const contextRunway = computeContextRunway(interactions);
-  const growthCurve = classifyGrowthCurve(interactions);
-  const totalInputAll = session.totalInputTokens + session.totalCacheReadTokens;
-  const cacheEfficiencyRate = totalInputAll > 0
-    ? Math.round(session.totalCacheReadTokens / totalInputAll * 100)
+  const growthCurve = classifyGrowthCurve(interactions.map(i => ({
+    inputTokens: i.effectiveContextTokens ?? (i.inputTokens + i.cacheReadTokens + i.cacheWriteTokens),
+  })));
+  // Denominator includes cacheWriteTokens: the model processes cached-write content too,
+  // so omitting it inflates cache efficiency toward ~100% in every cached session.
+  const totalContextLoad = session.totalInputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens;
+  const cacheEfficiencyRate = totalContextLoad > 0
+    ? Math.round(session.totalCacheReadTokens / totalContextLoad * 100)
     : 0;
   const cacheThrashDetected = session.totalCacheWriteTokens > 0 &&
     session.totalCacheWriteTokens > session.totalCacheReadTokens * 2;
@@ -173,14 +182,14 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
 
   // ── Tier-3 metrics ─────────────────────────────────────────────────────────
   const contextBudgetAllocation = computeContextBudgetAllocation(session);
-  const lostInMiddleRisk = computeLostInMiddleRisk(session, turnsCount, cacheEfficiencyRate);
+  const lostInMiddleRisk = computeLostInMiddleRisk(session, turnsCount, cacheEfficiencyRate, peakEffectiveContext);
 
   if (lostInMiddleRisk > 60) {
     overloadSignals.push({
       type: 'lost_in_middle',
       severity: lostInMiddleRisk > 80 ? 'high' : 'medium',
       message: `Lost-in-the-middle risk ${lostInMiddleRisk}%`,
-      detail: `At ${(session.totalInputTokens / 1000).toFixed(0)}K input tokens, models lose recall on content placed in the middle of the context window. Key instructions from early turns may be poorly attended to.`,
+      detail: `At ${(peakEffectiveContext / 1000).toFixed(0)}K context tokens, models lose recall on content placed in the middle of the context window. Key instructions from early turns may be poorly attended to.`,
     });
   }
 
@@ -236,6 +245,7 @@ function detectOverloadSignals(
   sessionAgeMinutes: number,
   inputBloatFactor: number,
   outputDeclineFactor: number,
+  peakEffectiveContext: number = 0,
 ): OverloadSignal[] {
   const signals: OverloadSignal[] = [];
 
@@ -276,20 +286,22 @@ function detectOverloadSignals(
     });
   }
 
-  // Large static context
-  if (session.totalInputTokens > 200_000) {
+  // Large static context — use peak effective context (input + cacheRead + cacheWrite) because
+  // input_tokens alone is near-zero for cached Claude Code sessions and would never trigger.
+  const ctxK = (peakEffectiveContext / 1000).toFixed(0);
+  if (peakEffectiveContext > 160_000) {
     signals.push({
       type: 'large_static_context',
       severity: 'high',
-      message: `Very large context (${(session.totalInputTokens / 1000).toFixed(0)}K input tokens)`,
-      detail: 'Context exceeds 200K tokens. Model attention may degrade on early instructions and key details may be lost in the middle.',
+      message: `Very large context (${ctxK}K tokens)`,
+      detail: 'Peak context window exceeded 160K tokens. Model attention degrades on early instructions and key details may be lost in the middle.',
     });
-  } else if (session.totalInputTokens > 80_000) {
+  } else if (peakEffectiveContext > 80_000) {
     signals.push({
       type: 'large_static_context',
       severity: 'medium',
-      message: `Large context (${(session.totalInputTokens / 1000).toFixed(0)}K input tokens)`,
-      detail: 'Context above 80K tokens. Monitor for the "lost in the middle" effect on early system prompts.',
+      message: `Large context (${ctxK}K tokens)`,
+      detail: 'Peak context window exceeded 80K tokens. Monitor for the "lost in the middle" effect on early system prompts.',
     });
   }
 
@@ -608,12 +620,14 @@ function computeOptimizationProposals(
 
 // ── Tier-1 helpers ────────────────────────────────────────────────────────────
 
-function computeContextRunway(interactions: { inputTokens: number }[]): number | null {
+function computeContextRunway(interactions: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; effectiveContextTokens?: number }[]): number | null {
   const MODEL_LIMIT = 200_000;
   if (interactions.length < 4) { return null; }
 
   const recent = interactions.slice(-6);
-  const inputs = recent.map(i => i.inputTokens);
+  // Use effective context per turn (input + cacheRead + cacheWrite) — for cached sessions,
+  // inputTokens alone is ~1-3 tokens and gives meaningless growth-rate estimates.
+  const inputs = recent.map(i => i.effectiveContextTokens ?? (i.inputTokens + i.cacheReadTokens + i.cacheWriteTokens));
   const n = inputs.length;
   const xs = Array.from({ length: n }, (_, i) => i);
   const sumX = xs.reduce((a, b) => a + b, 0);
@@ -700,8 +714,11 @@ function computeLostInMiddleRisk(
   session: Session,
   turnsCount: number,
   cacheEfficiencyRate: number,
+  peakEffectiveContext: number,
 ): number {
-  const total = session.totalInputTokens;
+  // Use peak effective context (input + cacheRead + cacheWrite) — not totalInputTokens, which
+  // is near-zero for cached Claude Code sessions and would never trigger this risk signal.
+  const total = peakEffectiveContext > 0 ? peakEffectiveContext : session.totalInputTokens;
   if (total < 60_000) { return 0; }
   let risk = Math.min(100, (total - 60_000) / (200_000 - 60_000) * 100);
   if (turnsCount > 30) { risk = Math.min(100, risk * 1.2); }

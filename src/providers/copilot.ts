@@ -266,6 +266,7 @@ export class CopilotProvider extends BaseProvider {
           cacheReadTokens,
           cacheWriteTokens,
           totalTokens: inputTokens + outputTokens + thinkingTokens,
+          effectiveContextTokens: inputTokens + cacheReadTokens + cacheWriteTokens,
           mode: this.getModeFromRequest(req),
           toolCalls,
           promptPreview: inputText ? inputText.trim().substring(0, 200) : undefined,
@@ -279,8 +280,7 @@ export class CopilotProvider extends BaseProvider {
       const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
       const totalCacheReadTokens = interactions.reduce((s, i) => s + i.cacheReadTokens, 0);
       const totalCacheWriteTokens = interactions.reduce((s, i) => s + i.cacheWriteTokens, 0);
-      const primaryModel = interactions[interactions.length - 1]?.model || 'gpt-5-mini';
-      const estimatedCostUsd = calculateCost(primaryModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens);
+      const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
 
       // Extract title from data or first message
       let title = data.title;
@@ -372,6 +372,7 @@ export class CopilotProvider extends BaseProvider {
             cacheReadTokens,
             cacheWriteTokens,
             totalTokens: inputTokens + outputTokens + thinkingTokens,
+            effectiveContextTokens: inputTokens + cacheReadTokens + cacheWriteTokens,
             mode: entry.mode || 'chat',
             toolCalls: [],
             promptPreview: promptText ? promptText.substring(0, 200) : undefined,
@@ -387,8 +388,7 @@ export class CopilotProvider extends BaseProvider {
       const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
       const totalCacheReadTokens = interactions.reduce((s, i) => s + i.cacheReadTokens, 0);
       const totalCacheWriteTokens = interactions.reduce((s, i) => s + i.cacheWriteTokens, 0);
-      const primaryModel = interactions[interactions.length - 1]?.model || 'gpt-5-mini';
-      const estimatedCostUsd = calculateCost(primaryModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens);
+      const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
 
       return {
         id: path.basename(filePath, '.jsonl'),
@@ -493,6 +493,7 @@ export class CopilotProvider extends BaseProvider {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         totalTokens: inputTokens + outputTokens + thinkingTokens,
+        effectiveContextTokens: inputTokens,
         mode: this.getModeFromRequest(request),
         toolCalls: this.extractToolCalls(request),
         promptPreview: inputText ? inputText.trim().substring(0, 200) : undefined,
@@ -500,10 +501,7 @@ export class CopilotProvider extends BaseProvider {
     }
 
     if (interactions.length === 0) { return null; }
-    const totalInputTokens = interactions.reduce((s, i) => s + i.inputTokens, 0);
-    const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
-    const primaryModel = interactions[interactions.length - 1]?.model || 'gpt-5-mini';
-    const estimatedCostUsd = calculateCost(primaryModel, totalInputTokens, totalOutputTokens, 0, 0);
+    const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
 
     const session = this.buildSession(filePath, path.basename(filePath, '.jsonl'), startTime, endTime, interactions);
     session.estimatedCostUsd = estimatedCostUsd;
@@ -557,6 +555,7 @@ export class CopilotProvider extends BaseProvider {
             cacheReadTokens: 0,
             cacheWriteTokens: 0,
             totalTokens: inputTokens + outputTokens,
+            effectiveContextTokens: inputTokens,
             mode: 'agent',
             toolCalls: this.extractToolRequests(event.data?.toolRequests),
           });
@@ -579,6 +578,7 @@ export class CopilotProvider extends BaseProvider {
             cacheReadTokens,
             cacheWriteTokens,
             totalTokens: inputTokens + outputTokens,
+            effectiveContextTokens: inputTokens + cacheReadTokens + cacheWriteTokens,
             mode: 'compaction',
             toolCalls: [],
           });
@@ -589,12 +589,7 @@ export class CopilotProvider extends BaseProvider {
     }
 
     if (interactions.length === 0) { return null; }
-    const totalInputTokens = interactions.reduce((s, i) => s + i.inputTokens, 0);
-    const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
-    const totalCacheReadTokens = interactions.reduce((s, i) => s + i.cacheReadTokens, 0);
-    const totalCacheWriteTokens = interactions.reduce((s, i) => s + i.cacheWriteTokens, 0);
-    const primaryModel = interactions[interactions.length - 1]?.model || currentModel;
-    const estimatedCostUsd = calculateCost(primaryModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens);
+    const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
 
     const session = this.buildSession(filePath, sessionId, startTime || fallbackTimestamp, endTime, interactions);
     session.estimatedCostUsd = estimatedCostUsd;
@@ -803,14 +798,30 @@ export class CopilotProvider extends BaseProvider {
     }
 
     const details = String(request?.details || request?.result?.details || '').toLowerCase();
-    if (details.includes('claude haiku 4.5')) { return 'claude-haiku-4.5'; }
-    if (details.includes('gpt-5 mini')) { return 'gpt-5-mini'; }
-    if (details.includes('raptor mini')) { return 'raptor-mini'; }
-    if (details.includes('gpt-5.3-codex')) { return 'gpt-5.3-codex'; }
-    if (details.includes('gpt-5.2-codex')) { return 'gpt-5.2-codex'; }
+    if (details.includes('claude fable 5') || details.includes('claude-fable-5')) { return 'claude-fable-5'; }
+    if (details.includes('claude opus 4.8') || details.includes('claude-opus-4.8')) { return 'claude-opus-4.8'; }
+    if (details.includes('claude opus 4.7') || details.includes('claude-opus-4.7')) { return 'claude-opus-4.7'; }
+    if (details.includes('claude opus 4.6') || details.includes('claude-opus-4.6')) { return 'claude-opus-4.6'; }
+    if (details.includes('claude opus 4.5') || details.includes('claude-opus-4.5')) { return 'claude-opus-4.5'; }
+    if (details.includes('claude sonnet 4.6') || details.includes('claude-sonnet-4.6')) { return 'claude-sonnet-4.6'; }
+    if (details.includes('claude sonnet 4.5') || details.includes('claude-sonnet-4.5')) { return 'claude-sonnet-4.5'; }
+    if (details.includes('claude haiku 4.5') || details.includes('claude-haiku-4.5')) { return 'claude-haiku-4.5'; }
+    if (details.includes('claude-sonnet-4') || details.includes('claude sonnet 4')) { return 'claude-sonnet-4'; }
+    if (details.includes('gemini 3.5 flash') || details.includes('gemini-3.5-flash')) { return 'gemini-3.5-flash'; }
+    if (details.includes('gemini 3.1 pro') || details.includes('gemini-3.1-pro')) { return 'gemini-3.1-pro'; }
+    if (details.includes('gemini 3 flash') || details.includes('gemini-3-flash')) { return 'gemini-3-flash'; }
+    if (details.includes('gemini 2.5 pro') || details.includes('gemini-2.5-pro')) { return 'gemini-2.5-pro'; }
+    if (details.includes('mai-code-1-flash') || details.includes('mai code 1 flash')) { return 'mai-code-1-flash'; }
+    if (details.includes('gpt-5.5')) { return 'gpt-5.5'; }
+    if (details.includes('gpt-5.4 mini') || details.includes('gpt-5.4-mini')) { return 'gpt-5.4-mini'; }
+    if (details.includes('gpt-5.4 nano') || details.includes('gpt-5.4-nano')) { return 'gpt-5.4-nano'; }
+    if (details.includes('gpt-5.4')) { return 'gpt-5.4'; }
+    if (details.includes('gpt-5.3-codex') || details.includes('gpt-5.3 codex')) { return 'gpt-5.3-codex'; }
+    if (details.includes('gpt-5.2-codex') || details.includes('gpt-5.2 codex')) { return 'gpt-5.2-codex'; }
+    if (details.includes('gpt-5 mini') || details.includes('gpt-5-mini')) { return 'gpt-5-mini'; }
+    if (details.includes('raptor mini') || details.includes('raptor-mini')) { return 'raptor-mini'; }
     if (details.includes('gpt-4.1')) { return 'gpt-4.1'; }
-    if (details.includes('claude-sonnet-4')) { return 'claude-sonnet-4'; }
-    
+
     return 'gpt-5-mini'; // Default fallback instead of 'auto' to ensure cost calculation works better
   }
 

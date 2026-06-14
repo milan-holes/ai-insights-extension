@@ -6,6 +6,7 @@ import * as os from 'os';
 import { DiagnosticReport, ProviderId } from '../types';
 import { BaseProvider } from '../providers/base';
 import { CacheManager } from '../core/cacheManager';
+import { designTokensCss } from './designSystem';
 
 export class DiagnosticsProvider {
   static async generateReport(
@@ -58,19 +59,7 @@ export class DiagnosticsProvider {
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap');
   
-  :root {
-    --bg-base: #0e0e0e;
-    --bg-surface: #1a1919;
-    --bg-surface-high: #201f1f;
-    --text-primary: #e5e2e1;
-    --text-secondary: #c1c6d7;
-    --primary: #007AFF;
-    --primary-glow: rgba(0, 122, 255, 0.2);
-    --border: rgba(255, 255, 255, 0.05);
-    
-    --font-primary: 'Inter', system-ui, sans-serif;
-    --font-data: 'Space Grotesk', 'JetBrains Mono', monospace;
-  }
+  ${designTokensCss()}
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: var(--font-primary); background: var(--bg-base); color: var(--text-primary); padding: 32px; line-height: 1.6; }
   .data-text { font-family: var(--font-data); }

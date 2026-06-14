@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { PromptRecord } from '../core/promptHistory';
 import { PROVIDER_ICONS } from './providerIcons';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 export class PromptHistoryViewProvider {
   static readonly viewType = 'aiInsights.promptHistory';
@@ -79,7 +80,7 @@ export class PromptHistoryViewProvider {
     p.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     p.push('<title>Prompt History</title>');
     p.push('<style>');
-    p.push(':root{--bg-base:#0e0e0e;--bg-surface:#1a1919;--bg-surface-high:#201f1f;--text-primary:#e5e2e1;--text-secondary:#c1c6d7;--primary:#007AFF;--primary-glow:rgba(0,122,255,0.2);--border:rgba(255,255,255,0.05);--font-primary:"Inter",system-ui,sans-serif;--font-data:"JetBrains Mono",monospace;}');
+    p.push(designTokensCss());
     p.push('*{margin:0;padding:0;box-sizing:border-box;}');
     p.push('body{font-family:var(--font-primary);background:var(--bg-base);color:var(--text-primary);padding:0;line-height:1.6;}');
     p.push(navCss());
@@ -159,7 +160,7 @@ export class PromptHistoryViewProvider {
     p.push('<div class="filter-bar">');
     p.push('  <label>Show</label>');
     p.push('  <select id="limitSelect"><option value="10">Last 10</option><option value="25">Last 25</option><option value="50" selected>Last 50</option></select>');
-    p.push('  <select id="providerFilter"><option value="">All providers</option><option value="copilot">Copilot</option><option value="claudeCode">Claude Code</option><option value="antigravity">Antigravity</option><option value="codex">Codex</option></select>');
+    p.push('  <select id="providerFilter"><option value="">All providers</option><option value="copilot">Copilot</option><option value="claudeCode">Claude Code</option><option value="antigravity">Antigravity</option><option value="codex">Codex</option><option value="jetbrainsAI">JetBrains AI</option><option value="visualStudio">Visual Studio</option></select>');
     p.push('  <span class="info-note">Grouped by 2-min gap - each row is one user prompt + all agent turns</span>');
     p.push('</div>');
 

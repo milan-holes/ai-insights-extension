@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics } from '../types';
 import { providerIcon } from './providerIcons';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { designTokensCss } from './designSystem';
 
 
 const MODE_META: Record<string, { label: string; icon: string }> = {
@@ -464,15 +465,7 @@ function getHtml(_m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acc
 <title>AI Insights - Workspace Analysis</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap');
-  :root {
-    --bg-base: #0e0e0e; --bg-surface: #1a1919; --bg-surface-high: #201f1f;
-    --text-primary: #e5e2e1; --text-secondary: #c1c6d7;
-    --primary: #007AFF; --primary-glow: rgba(0,122,255,0.2);
-    --border: rgba(255,255,255,0.05);
-    --stage-1: #FF4D4D; --stage-4: #39FF14;
-    --font-primary: 'Inter', system-ui, sans-serif;
-    --font-data: 'Space Grotesk', monospace;
-  }
+  ${designTokensCss()}
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:var(--font-primary); background:var(--bg-base); color:var(--text-primary); padding:0; line-height:1.6; }
   .data-text { font-family:var(--font-data); }

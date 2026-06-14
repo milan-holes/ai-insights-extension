@@ -2,7 +2,7 @@
   "name": "ai-insights",
   "displayName": "AI Insights - Token Tracker",
   "description": "Track token usage, costs, and AI metrics across GitHub Copilot, Antigravity, Claude Code, and Codex.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "thewalking-dev",
   "license": "MIT",
   "icon": "assets/logo.png",
@@ -126,6 +126,24 @@
         "title": "Configure Token Highlight Colors",
         "category": "AI Insights",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "aiInsights.showRepoAnalysis",
+        "title": "Show Repo Analysis & Agent Handoff",
+        "category": "AI Insights",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "aiInsights.startSharing",
+        "title": "Share Stats on Local Network",
+        "category": "AI Insights",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "aiInsights.stopSharing",
+        "title": "Stop Sharing Stats",
+        "category": "AI Insights",
+        "icon": "$(debug-stop)"
       }
     ],
     "menus": {
@@ -159,10 +177,28 @@
           "default": true,
           "description": "Enable Claude Code session log tracking."
         },
+        "aiInsights.providers.claudeCode.additionalSessionPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories to scan for Claude Code JSONL session files, in addition to ~/.claude/projects/. Useful when sessions are stored at a non-default location, e.g. on a remote server or when CLAUDE_HOME is overridden. Supports ~ expansion."
+        },
         "aiInsights.providers.codex.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable Codex session log tracking."
+        },
+        "aiInsights.providers.jetbrainsAI.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable GitHub Copilot for JetBrains session tracking (reads JSONL partition files from ~/.copilot/jb/). On WSL2 also probes /mnt/c/Users/<name>/.copilot/jb/ so sessions from WebStorm/IntelliJ running on Windows are discovered automatically."
+        },
+        "aiInsights.providers.visualStudio.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Visual Studio Copilot Chat session tracking (reads MessagePack session files from .vs/**/copilot-chat/). Also supports WSL2: scans /mnt/c/Users/ automatically."
         },
         "aiInsights.refreshIntervalMinutes": {
           "type": "number",
@@ -170,6 +206,36 @@
           "minimum": 1,
           "maximum": 60,
           "description": "Auto-refresh interval in minutes."
+        },
+        "aiInsights.shareHost": {
+          "type": "string",
+          "default": "",
+          "description": "Optional host/IP to use in shared dashboard URLs. Set this to your computer's Wi-Fi/LAN IP when auto-detected links are not reachable from another device, especially from WSL, SSH remotes, or containers."
+        },
+        "aiInsights.sharePort": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Fixed port for the local share server (0 = auto-assign). Set a fixed port (e.g. 57312) so you can configure a permanent Windows firewall rule and netsh port-proxy when running from WSL."
+        },
+        "aiInsights.sharing.mode": {
+          "type": "string",
+          "enum": [
+            "localNetwork",
+            "teamServer"
+          ],
+          "enumDescriptions": [
+            "Start a temporary HTTP server on this machine and share a LAN URL.",
+            "Upload a dashboard snapshot to a configured sharing server and share its dashboard URL."
+          ],
+          "default": "localNetwork",
+          "description": "How the Share button publishes dashboard stats."
+        },
+        "aiInsights.sharing.teamServer.endpointUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the AI Insights sharing server, for example https://ai-insights.example.com. Used when aiInsights.sharing.mode is teamServer."
         },
         "aiInsights.sessionLookbackDays": {
           "type": "number",
@@ -227,7 +293,11 @@
         },
         "aiInsights.tokenCounter.defaultFamily": {
           "type": "string",
-          "enum": ["claude", "gpt", "gemini"],
+          "enum": [
+            "claude",
+            "gpt",
+            "gemini"
+          ],
           "enumDescriptions": [
             "Claude tokenizer (~3.5 chars/token)",
             "GPT tokenizer (~4.0 chars/token)",
@@ -279,6 +349,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
-    "chart.js": "^4.4.1"
+    "@msgpack/msgpack": "^3.1.3",
+    "@types/qrcode": "^1.5.6",
+    "chart.js": "^4.4.1",
+    "qrcode": "^1.5.4"
   }
 }

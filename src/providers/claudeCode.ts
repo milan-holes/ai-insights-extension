@@ -13,20 +13,23 @@ export class ClaudeCodeProvider extends BaseProvider {
   readonly id = 'claudeCode' as const;
   readonly displayName = 'Claude Code';
   private readonly projectsDir: string;
+  private readonly extraDirs: string[];
 
-  constructor() {
+  constructor(additionalPaths: string[] = []) {
     super();
     this.projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    this.extraDirs = additionalPaths.map(p => p.replace(/^~/, os.homedir()));
   }
 
-  getSessionDirectories(): string[] { return [this.projectsDir]; }
+  getSessionDirectories(): string[] { return [this.projectsDir, ...this.extraDirs]; }
 
   async discoverSessionFiles(): Promise<string[]> {
     const files: string[] = [];
-    try {
-      if (!fs.existsSync(this.projectsDir)) { return files; }
-      this.walkDir(this.projectsDir, files);
-    } catch { /* skip */ }
+    for (const dir of this.getSessionDirectories()) {
+      try {
+        if (fs.existsSync(dir)) { this.walkDir(dir, files); }
+      } catch { /* skip */ }
+    }
     return files;
   }
 
@@ -58,6 +61,8 @@ export class ClaudeCodeProvider extends BaseProvider {
       let title: string | undefined;
       const seenMessageIds = new Set<string>();
       let pendingUserPreview: string | undefined;
+      const mcpServers = new Set<string>();
+      let estimatedBaseContextTokens: number | undefined;
 
       for (const line of lines) {
         try {
@@ -66,6 +71,20 @@ export class ClaudeCodeProvider extends BaseProvider {
           // Extract ai-title before processing usage
           if (entry.type === 'ai-title' && entry.aiTitle) {
             title = entry.aiTitle;
+            continue;
+          }
+
+          // Parse MCP server names from deferred tool list attachments
+          if (entry.type === 'attachment') {
+            const att = entry.attachment || {};
+            if (att.type === 'deferred_tools_delta' && Array.isArray(att.addedNames)) {
+              for (const name of att.addedNames as string[]) {
+                if (name.startsWith('mcp__')) {
+                  const parts = name.split('__');
+                  if (parts.length >= 2) { mcpServers.add(parts[1]); }
+                }
+              }
+            }
             continue;
           }
 
@@ -78,7 +97,7 @@ export class ClaudeCodeProvider extends BaseProvider {
             interactions.push({
               timestamp: ts, model: '', inputTokens: 0, outputTokens: 0,
               thinkingTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-              totalTokens: 0, mode: 'compaction', toolCalls: [],
+              totalTokens: 0, effectiveContextTokens: 0, mode: 'compaction', toolCalls: [],
               isCompactionEvent: true,
               compactionTrigger: meta.trigger === 'manual' ? 'manual' : 'auto',
               preCompactionTokens: meta.preTokens,
@@ -107,6 +126,9 @@ export class ClaudeCodeProvider extends BaseProvider {
           const cacheWriteTokens = usage.cache_creation_input_tokens || usage.cache_write || 0;
           const thinkingTokens = usage.thinking_tokens || usage.thinking || 0;
           const model = entry.model || entry.message?.model || 'claude';
+          const serverToolUse = usage.server_tool_use || {};
+          const webSearchRequests: number = serverToolUse.web_search_requests || 0;
+          const webFetchRequests: number = serverToolUse.web_fetch_requests || 0;
 
           if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0 && model === 'claude') { continue; }
 
@@ -115,6 +137,11 @@ export class ClaudeCodeProvider extends BaseProvider {
           if (msgId) {
             if (seenMessageIds.has(msgId)) { continue; }
             seenMessageIds.add(msgId);
+          }
+
+          // First cache-write in session ≈ static overhead (system prompt + CLAUDE.md + MCP schemas)
+          if (estimatedBaseContextTokens === undefined && cacheWriteTokens > 0) {
+            estimatedBaseContextTokens = cacheWriteTokens;
           }
 
           // Tool calls live in message.content as type:"tool_use" blocks
@@ -144,6 +171,7 @@ export class ClaudeCodeProvider extends BaseProvider {
             }
           }
 
+          const effectiveContextTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
           interactions.push({
             timestamp: ts,
             model: model,
@@ -152,11 +180,14 @@ export class ClaudeCodeProvider extends BaseProvider {
             cacheReadTokens,
             cacheWriteTokens,
             totalTokens: inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheWriteTokens,
+            effectiveContextTokens,
             mode: entry.type || entry.role || entry.message?.role || 'chat',
             toolCalls,
             commandRuns: commandRuns.length > 0 ? commandRuns : undefined,
             fileAccesses: fileAccesses.length > 0 ? fileAccesses : undefined,
             promptPreview: pendingUserPreview,
+            webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
+            webFetchRequests: webFetchRequests > 0 ? webFetchRequests : undefined,
           });
           pendingUserPreview = undefined; // consumed by first assistant turn after this user message
         } catch { /* skip line */ }
@@ -167,6 +198,7 @@ export class ClaudeCodeProvider extends BaseProvider {
       const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
       const totalCacheReadTokens = interactions.reduce((s, i) => s + i.cacheReadTokens, 0);
       const totalCacheWriteTokens = interactions.reduce((s, i) => s + i.cacheWriteTokens, 0);
+      const peakEffectiveContextTokens = interactions.reduce((m, i) => Math.max(m, i.effectiveContextTokens), 0);
       const primaryModel = interactions[interactions.length - 1]?.model || 'claude';
       const estimatedCostUsd = calculateCost(primaryModel, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens);
 
@@ -185,6 +217,9 @@ export class ClaudeCodeProvider extends BaseProvider {
         sourceFile: filePath,
         title,
         estimatedCostUsd,
+        activeMcpServers: mcpServers.size > 0 ? [...mcpServers] : undefined,
+        estimatedBaseContextTokens,
+        peakEffectiveContextTokens,
       };
     } catch { return null; }
   }
