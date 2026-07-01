@@ -11,7 +11,7 @@ import * as path from 'path';
 import { Session, Interaction } from '../types';
 
 const SNAPSHOT_FILE = 'copilot-session-snapshots.json';
-const MAX_SNAPSHOTS = 2000;
+const DEFAULT_MAX_SNAPSHOTS = 2000;
 
 interface SerializedInteraction extends Omit<Interaction, 'timestamp'> {
   timestamp: string;
@@ -30,9 +30,16 @@ interface SnapshotFile {
 
 export class SessionSnapshotStore {
   private readonly filePath: string;
+  private maxSnapshots: number;
 
-  constructor(storageDir: string) {
+  constructor(storageDir: string, maxSnapshots: number = DEFAULT_MAX_SNAPSHOTS) {
     this.filePath = path.join(storageDir, SNAPSHOT_FILE);
+    this.maxSnapshots = maxSnapshots;
+  }
+
+  /** Update the snapshot cap, e.g. when the user changes the setting at runtime. */
+  setMaxSnapshots(maxSnapshots: number): void {
+    this.maxSnapshots = maxSnapshots;
   }
 
   /** Persist a session. Overwrites any existing snapshot with the same id. */
@@ -41,13 +48,13 @@ export class SessionSnapshotStore {
     data.snapshots[session.id] = this.serialize(session);
 
     const ids = Object.keys(data.snapshots);
-    if (ids.length > MAX_SNAPSHOTS) {
+    if (ids.length > this.maxSnapshots) {
       const sorted = ids.sort(
         (a, b) =>
           new Date(data.snapshots[a].endTime).getTime() -
           new Date(data.snapshots[b].endTime).getTime(),
       );
-      for (let i = 0; i < ids.length - MAX_SNAPSHOTS; i++) {
+      for (let i = 0; i < ids.length - this.maxSnapshots; i++) {
         delete data.snapshots[sorted[i]];
       }
     }

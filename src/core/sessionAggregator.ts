@@ -165,10 +165,12 @@ export function aggregateSessions(sessions: Session[], config: AggregationConfig
 }
 
 function normalizeMode(mode: string, provider: ProviderId): string {
-  if (provider === 'claudeCode') { return 'cli'; }
   if (provider === 'codex') { return 'agent'; }
   if (provider === 'antigravity') { return 'ask'; }
   const m = (mode || '').toLowerCase();
+  if (provider === 'claudeCode') {
+    return m === 'ask' || m === 'edit' || m === 'agent' || m === 'plan' ? m : 'cli';
+  }
   if (m === 'edit') { return 'edit'; }
   if (m === 'agent') { return 'agent'; }
   if (m === 'plan') { return 'plan'; }

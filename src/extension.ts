@@ -26,6 +26,7 @@ import { SessionTagsStore } from './core/sessionTagsStore';
 import { PricingViewProvider } from './webview/pricingView';
 import { buildHygieneReports } from './core/repositoryHygiene';
 import { AcceptanceTracker } from './core/acceptanceTracker';
+import { DiffTracker } from './core/diffTracker';
 import { Session, AggregatedMetrics, AggregationConfig, AlertThresholds } from './types';
 import { ConnectedGitHubUser, connectGitHubAndDetectPlan, getGitHubAccessToken } from './core/githubAuth';
 import { PromptHistoryStore } from './core/promptHistory';
@@ -40,6 +41,7 @@ import { LiveTokenCounter } from './core/liveTokenCounter';
 import { LiveBudgetConfig, RateLimitEvent } from './types';
 import { computeUsageHealthScore } from './core/usageHealthScore';
 import { RepoAnalysisViewProvider } from './webview/repoAnalysisView';
+import { AIStructureViewProvider } from './webview/aiStructureView';
 import { ReplayViewProvider } from './webview/replayView';
 import { ShareServer } from './core/shareServer';
 import QRCode from 'qrcode';
@@ -58,6 +60,7 @@ const cacheManager = new CacheManager();
 let snapshotStore: SessionSnapshotStore;
 const promptHistoryStore = new PromptHistoryStore();
 const acceptanceTracker = new AcceptanceTracker();
+const diffTracker = new DiffTracker();
 let sessionTagsStore: SessionTagsStore;
 const DEFAULT_SESSION_LOOKBACK_DAYS = 400;
 const GITHUB_USER_STATE_KEY = 'aiInsights.githubUser';
@@ -74,9 +77,13 @@ export function activate(context: vscode.ExtensionContext) {
   connectedGitHubUser = context.globalState.get<ConnectedGitHubUser>(GITHUB_USER_STATE_KEY);
   liveBudgetConfig = context.globalState.get<LiveBudgetConfig | null>(LIVE_BUDGET_CONFIG_KEY, null);
   rateLimitEvents = context.globalState.get<RateLimitEvent[]>(RATE_LIMIT_EVENTS_KEY, []);
-  snapshotStore = new SessionSnapshotStore(context.globalStorageUri.fsPath);
+  snapshotStore = new SessionSnapshotStore(
+    context.globalStorageUri.fsPath,
+    vscode.workspace.getConfiguration('aiInsights').get<number>('providers.copilot.maxSessionSnapshots', 2000),
+  );
   sessionTagsStore = new SessionTagsStore(context.globalStorageUri.fsPath);
   acceptanceTracker.register(context);
+  diffTracker.register(context);
 
   // Wire tag callbacks so the sessions view can persist tag changes
   SessionsViewProvider._addTag = (sessionId, tag) => {
@@ -141,6 +148,9 @@ vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string,
     vscode.commands.registerCommand('aiInsights.showRepoAnalysis', () =>
       RepoAnalysisViewProvider.createPanel(context),
     ),
+    vscode.commands.registerCommand('aiInsights.showAIStructure', () =>
+      AIStructureViewProvider.createPanel(context),
+    ),
     vscode.commands.registerCommand('aiInsights.showSessionReplay', (sessionId: string) => {
       const session = allSessions.find(s => s.id === sessionId);
       if (session) { ReplayViewProvider.createPanel(context, session); }
@@ -167,6 +177,7 @@ vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string,
         if (refreshTimer) { clearInterval(refreshTimer); }
         const newConfig = vscode.workspace.getConfiguration('aiInsights');
         const newInterval = newConfig.get<number>('refreshIntervalMinutes', 5);
+        snapshotStore.setMaxSnapshots(newConfig.get<number>('providers.copilot.maxSessionSnapshots', 2000));
         const newProviders = getEnabledProviders();
         refreshTimer = setInterval(() => refresh(newProviders), newInterval * 60 * 1000);
         refresh(newProviders);
@@ -186,7 +197,7 @@ export function deactivate() {
 async function handleStartSharing() {
   outputChannel.appendLine(`[Share] startSharing called. latestMetrics=${!!latestMetrics} remoteName=${vscode.env.remoteName}`);
   if (!latestMetrics) {
-    DashboardProvider.postSharingError('No data loaded yet — wait a moment and try again.');
+    DashboardProvider.postSharingError('No data loaded yet - wait a moment and try again.');
     vscode.window.showWarningMessage('AI Insights: No data loaded yet. Please wait for the extension to load.');
     return;
   }
@@ -336,7 +347,8 @@ function getEnabledProviders(): BaseProvider[] {
   const providers: BaseProvider[] = [];
 
   if (config.get<boolean>('providers.copilot.enabled', true)) {
-    providers.push(new CopilotProvider());
+    const multiplier = config.get<number>('providers.copilot.inputTokenMultiplier', 1.0);
+    providers.push(new CopilotProvider(multiplier));
   }
   if (config.get<boolean>('providers.antigravity.enabled', true)) {
     providers.push(new AntigravityProvider());
@@ -514,7 +526,7 @@ function updateStatusBar(metrics: AggregatedMetrics) {
       `$(record) LIVE · ctx: ${fmt(primary.lastInputTokens)} (${primary.contextPct}%) ${healthIcon}${multiLabel} · ${today} today`;
 
     const lines = [
-      `🔴 **Session in progress** — don't close VS Code`,
+      `🔴 **Session in progress** - don't close VS Code`,
       ``,
       `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''}`,
       ``,
@@ -541,7 +553,7 @@ function updateStatusBar(metrics: AggregatedMetrics) {
         lines.push(`\n &nbsp; ${getProviderDisplayName(id)}: ${p.totalTokens.toLocaleString()} tokens`);
       }
     }
-    lines.push(``, `⚠️ _Closing VS Code will end the session_`, ``, `_Click for dashboard_`);
+    lines.push(``, `_Click for dashboard_`);
 
     const tooltip = new vscode.MarkdownString(lines.join('\n'));
     tooltip.isTrusted = true;
@@ -606,7 +618,7 @@ async function showDashboard(context: vscode.ExtensionContext) {
     const roiCfg = { hourlyRate: cfg.get<number>('roi.developerHourlyRate', 75), tokensPerHourSaved: cfg.get<number>('roi.outputTokensPerHourSaved', 3000) };
     const acceptance = acceptanceTracker.getStats();
     const healthScore = computeUsageHealthScore(latestMetrics, allSessions, acceptance);
-    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore);
+    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore, diffTracker.getStats());
   }
 }
 

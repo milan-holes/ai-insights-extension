@@ -2,9 +2,11 @@
  * Dashboard webview provider - renders the main token usage dashboard.
  */
 import * as vscode from 'vscode';
-import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics } from '../types';
+import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics, DiffMetrics, DailyUsage } from '../types';
 import { ConnectedGitHubUser } from '../core/githubAuth';
 import { UsageHealthScore } from '../core/usageHealthScore';
+import { computeCacheMetrics } from '../core/budgetManager';
+import { toLocalDateKey } from '../core/dateUtils';
 import { providerIcon } from './providerIcons';
 import { navCss, navTopbarHtml, navPagebarHtml, navFilterbarHtml, navJs, NAV_COMMANDS } from './navShared';
 import { designTokensCss } from './designSystem';
@@ -192,6 +194,101 @@ function buildWorkspaceHealthHtml(reports: RepositoryHygieneReport[]): string {
   </p>`;
 }
 
+/** GitHub-style contribution heatmap over the trailing ~53 weeks, bucketed by total daily tokens. */
+const LOOKBACK_OPTIONS = [30, 60, 90, 180, 365];
+
+function buildActivityHeatmapHtml(daily: DailyUsage[]): string {
+  const lookbackDays = vscode.workspace.getConfiguration('aiInsights').get<number>('sessionLookbackDays', 30);
+  const tokensByDate = new Map<string, number>();
+  for (const d of daily) {
+    tokensByDate.set(d.date, (tokensByDate.get(d.date) || 0) + d.totalTokens);
+  }
+
+  const GAP = 3;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 370); // trailing ~53 weeks, GitHub-style
+  start.setDate(start.getDate() - start.getDay()); // snap back to the preceding Sunday
+  // Mirrors getSessionCutoff() in extension.ts: sessions older than this were never scanned into `daily`,
+  // so those cells mean "not analyzed", not "zero activity" — they need a visually distinct, more muted color.
+  const cutoffKey = toLocalDateKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - lookbackDays));
+
+  const days: { date: string; tokens: number; d: Date; analyzed: boolean }[] = [];
+  for (const cursor = new Date(start); cursor <= today; cursor.setDate(cursor.getDate() + 1)) {
+    const date = toLocalDateKey(cursor);
+    days.push({ date, tokens: tokensByDate.get(date) || 0, d: new Date(cursor), analyzed: date >= cutoffKey });
+  }
+
+  const sortedNonZero = days.map(d => d.tokens).filter(t => t > 0).sort((a, b) => a - b);
+  const quantile = (p: number) => sortedNonZero.length
+    ? sortedNonZero[Math.min(sortedNonZero.length - 1, Math.floor(p * sortedNonZero.length))]
+    : 0;
+  const q1 = quantile(0.25), q2 = quantile(0.5);
+  const maxNonZero = sortedNonZero.length ? sortedNonZero[sortedNonZero.length - 1] : 0;
+  const levelColors = ['var(--bg-surface-high)', 'rgba(57,255,20,0.25)', 'rgba(57,255,20,0.48)', 'rgba(57,255,20,0.72)', 'var(--stage-4)'];
+  const levelOf = (tokens: number): number => {
+    if (tokens <= 0) { return 0; }
+    if (tokens >= maxNonZero) { return 4; } // guarantees the busiest day(s) always hit the brightest shade, even with few active days
+    if (tokens <= q1) { return 1; }
+    if (tokens <= q2) { return 2; }
+    return 3;
+  };
+
+  const weeks: (typeof days[number] | undefined)[][] = [];
+  for (let i = 0; i < days.length; i += 7) {
+    weeks.push(days.slice(i, i + 7));
+  }
+
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let lastMonth = -1;
+  // Row 0 of the grid: an empty corner cell (aligned with the day-label column) + one label per week column.
+  const monthRowHtml = '<div></div>' + weeks.map(week => {
+    const month = week[0]!.d.getMonth();
+    const label = month !== lastMonth ? monthNames[month] : '';
+    lastMonth = month;
+    return `<div style="font-size:9px;color:var(--text-secondary);white-space:nowrap;">${label}</div>`;
+  }).join('');
+
+  // Rows 1-7: a day-of-week label + one cell per week column, in grid row-major order.
+  const dayRowLabels = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+  let dayRowsHtml = '';
+  for (let row = 0; row < 7; row++) {
+    dayRowsHtml += `<div style="font-size:9px;color:var(--text-secondary);display:flex;align-items:center;">${dayRowLabels[row]}</div>`;
+    for (const week of weeks) {
+      const day = week[row];
+      if (!day) { dayRowsHtml += '<div></div>'; continue; }
+      if (!day.analyzed) {
+        const title = `${day.date}: outside the analyzed window (last ${lookbackDays} days) — widen it below to include this date`;
+        dayRowsHtml += `<div title="${title}" style="aspect-ratio:1;border-radius:2px;background:rgba(255,255,255,0.03);"></div>`;
+        continue;
+      }
+      const title = `${day.date}: ${day.tokens.toLocaleString()} tokens`;
+      dayRowsHtml += `<div title="${title}" style="aspect-ratio:1;border-radius:2px;background:${levelColors[levelOf(day.tokens)]};"></div>`;
+    }
+  }
+
+  const legendHtml = levelColors.map(c => `<div style="width:11px;height:11px;border-radius:2px;background:${c};"></div>`).join('');
+
+  const optionsHtml = (LOOKBACK_OPTIONS.includes(lookbackDays) ? LOOKBACK_OPTIONS : [...LOOKBACK_OPTIONS, lookbackDays].sort((a, b) => a - b))
+    .map(d => `<option value="${d}" ${d === lookbackDays ? 'selected' : ''}>${d} days</option>`)
+    .join('');
+
+  return `<div class="section">
+    <h2>🔥 Activity Heatmap</h2>
+    <div style="display:grid;grid-template-columns:28px repeat(${weeks.length}, minmax(0, 1fr));gap:${GAP}px;width:100%;overflow:hidden;">
+      ${monthRowHtml}
+      ${dayRowsHtml}
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;font-size:9px;color:var(--text-secondary);">
+      <span>Analyzing last <strong style="color:var(--text-primary)">${lookbackDays}</strong> days of session history &middot;
+        <select id="lookbackSelect" title="Increase aiInsights.sessionLookbackDays to load more history (re-scans and refreshes the dashboard)" style="background:var(--bg-surface-high);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-size:9px;padding:1px 4px;font-family:var(--font-primary);">${optionsHtml}</select>
+      </span>
+      <span style="display:flex;align-items:center;gap:4px;">Less${legendHtml}More</span>
+    </div>
+  </div>`;
+}
+
 export interface ShareInfo {
   localUrl: string;
   lanUrls: string[];
@@ -213,12 +310,12 @@ export class DashboardProvider {
     DashboardProvider.currentPanel?.webview.postMessage({ type: 'sharingError', error });
   }
 
-  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore): vscode.WebviewPanel {
+  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics): vscode.WebviewPanel {
     const logoPath = vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png');
 
     if (DashboardProvider.currentPanel) {
       const logoUri = DashboardProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore);
+      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics);
       DashboardProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return DashboardProvider.currentPanel;
     }
@@ -234,7 +331,7 @@ export class DashboardProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore);
+    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics);
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -252,6 +349,15 @@ export class DashboardProvider {
           case 'disconnectGitHub': vscode.commands.executeCommand('aiInsights.disconnectGitHub'); break;
           case 'startSharing': vscode.commands.executeCommand('aiInsights.startSharing'); break;
           case 'stopSharing': vscode.commands.executeCommand('aiInsights.stopSharing'); break;
+          case 'setSessionLookbackDays': {
+            const days = Math.min(365, Math.max(1, Math.round(Number(message.value))));
+            if (!Number.isFinite(days)) { break; }
+            vscode.workspace.getConfiguration('aiInsights')
+              .update('sessionLookbackDays', days, vscode.ConfigurationTarget.Global)
+              .then(() => vscode.commands.executeCommand('aiInsights.refresh'))
+              .then(() => vscode.commands.executeCommand('aiInsights.showDashboard'));
+            break;
+          }
         }
       },
       undefined,
@@ -295,7 +401,7 @@ export class DashboardProvider {
     }
   }
 
-  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore): string {
+  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics): string {
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' :
       n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : n.toString();
     const fmtCost = (n: number) => '$' + n.toFixed(4);
@@ -351,8 +457,8 @@ export class DashboardProvider {
       </div>
     </div>`;
 
-    // ── Copilot cache efficiency widget ───────────────────────────────────
-    const ch = m.cache;
+    // ── Copilot cache efficiency widget (Copilot-only, not the all-provider m.cache) ──
+    const ch = computeCacheMetrics(m.currentMonthByProvider.copilot);
     const cacheHitColor = ch.cacheHitRate >= 0.3 ? '#39FF14' : ch.cacheHitRate >= 0.1 ? '#f9e2af' : 'var(--text-secondary)';
     const copilotCacheSection = `
     <div id="section-copilot-cache" class="section" style="display:none;">
@@ -365,7 +471,7 @@ export class DashboardProvider {
         <div class="mini-card"><div class="mini-label">Cache Write Tokens</div><div class="mini-val data-text">${fmt(ch.totalCacheWriteTokens)}</div></div>
         <div class="mini-card"><div class="mini-label">Read/Write Ratio</div><div class="mini-val data-text">${ch.cacheWriteReadRatio.toFixed(1)}×</div></div>
       </div>
-      ${ch.cacheHitRate < 0.1 && ch.totalCacheWriteTokens === 0 ? `<p style="font-size:0.85em;color:var(--text-secondary);">ℹ️ No cache data detected. Prompt caching is available for Claude and GPT-4o - see provider docs to enable it.</p>` : ''}
+      ${ch.cacheHitRate < 0.1 && ch.totalCacheWriteTokens === 0 ? `<p style="font-size:0.85em;color:var(--text-secondary);">ℹ️ No cache data detected. GitHub Copilot's local session logs don't currently expose a separate cache-read/cache-write token count (community-reported: Copilot's own usage events report these as 0 regardless of the underlying model), so cache efficiency can't be measured for Copilot sessions today - see the disclaimer at the bottom of the dashboard.</p>` : ''}
     </div>`;
 
     // ── Cache efficiency card ──────────────────────────────────────────────
@@ -556,11 +662,17 @@ export class DashboardProvider {
     const allPeriodDevImpactJson = JSON.stringify(allPeriodDevImpact);
 
     // ── Per-period provider breakdown for provider table ─────────────────────
+    // Copilot and Antigravity don't expose a cache-read/cache-write breakdown in their
+    // local session logs (always reported as 0), so a hit rate can't be computed for them -
+    // see the "About This Data" disclaimer.
+    const CACHE_TRACKING_SUPPORTED = new Set(['claudeCode', 'codex']);
     const byPeriodAndProvider = (byProv: Record<string, import('../types').ProviderMetrics>) =>
       providerIds.reduce((acc, pid) => {
         const p = byProv[pid];
-        const cacheHitPct = p.inputTokens > 0 ? Math.round((p.cacheReadTokens / p.inputTokens) * 100) : 0;
-        acc[pid] = { totalTokens: p.totalTokens, sessions: p.sessions, interactions: p.interactions, cacheHitPct };
+        const cacheTrackable = CACHE_TRACKING_SUPPORTED.has(pid);
+        const cacheTotal = p.inputTokens + p.cacheReadTokens;
+        const cacheHitPct = cacheTotal > 0 ? Math.round((p.cacheReadTokens / cacheTotal) * 100) : 0;
+        acc[pid] = { totalTokens: p.totalTokens, sessions: p.sessions, interactions: p.interactions, cacheHitPct, cacheTrackable };
         return acc;
       }, {} as Record<string, object>);
     const allPeriodProviderData: Record<string, object> = {
@@ -815,7 +927,7 @@ export class DashboardProvider {
   <div id="sharePanel" style="display:none;background:rgba(0,122,255,0.07);border-bottom:1px solid rgba(0,122,255,0.2);padding:14px 32px;">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
       <div style="flex:1;min-width:260px;">
-        <div style="font-size:12px;font-weight:600;color:#6db3ff;margin-bottom:10px;letter-spacing:0.04em;text-transform:uppercase;">⬆ Sharing Active — expires in 30 min</div>
+        <div style="font-size:12px;font-weight:600;color:#6db3ff;margin-bottom:10px;letter-spacing:0.04em;text-transform:uppercase;">⬆ Sharing Active - expires in 30 min</div>
         <div id="shareUrlRows" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div id="shareWarning" style="display:none;margin-top:10px;font-size:11.5px;color:#f9e2af;background:rgba(249,226,175,0.07);border:1px solid rgba(249,226,175,0.2);border-radius:5px;padding:8px 12px;line-height:1.55;"></div>
       </div>
@@ -861,14 +973,14 @@ export class DashboardProvider {
         `)}
         ${helpStep(2, 'Set the host in settings', `
           Open VS Code settings and set <code>aiInsights.shareHost</code> to the IP from step 1 (e.g. <code>192.168.1.42</code>).
-          Then click Share again — the generated URL will use that IP.
+          Then click Share again - the generated URL will use that IP.
         `)}
         ${helpStep(3, 'Open the firewall port', `
           <b>macOS:</b> System Settings → Network → Firewall → allow incoming on the share port, or temporarily turn off the firewall.<br>
           <b>Linux:</b> <code>sudo ufw allow &lt;PORT&gt;/tcp</code>
         `)}
         ${helpStep(4, 'Scan the QR code', `
-          Click <b>⬛ QR Code</b> — scan it with your phone. Both devices must be on the same Wi-Fi network.
+          Click <b>⬛ QR Code</b> - scan it with your phone. Both devices must be on the same Wi-Fi network.
         `)}
       </div>
 
@@ -891,14 +1003,14 @@ export class DashboardProvider {
           Replace <code>WSL_IP</code> and <code>PORT</code> with your values:<br>
           <code>netsh interface portproxy add v4tov4 listenport=PORT listenaddress=0.0.0.0 connectport=PORT connectaddress=WSL_IP</code><br>
           <code>New-NetFirewallRule -DisplayName "AI Insights Share" -Direction Inbound -LocalPort PORT -Protocol TCP -Action Allow</code><br><br>
-          <b>Shortcut:</b> click <b>Copy Windows Command</b> in the share bar — it fills in your current WSL IP and port automatically.
+          <b>Shortcut:</b> click <b>Copy Windows Command</b> in the share bar - it fills in your current WSL IP and port automatically.
         `)}
         ${helpStep(5, 'Set the host and scan', `
           Set <code>aiInsights.shareHost</code> to your Windows LAN IP (<code>192.168.1.42</code>). Click <b>⬛ QR Code</b> and scan from your phone.
         `)}
         <div style="margin-top:14px;padding:10px 14px;background:rgba(249,226,175,0.06);border:1px solid rgba(249,226,175,0.18);border-radius:6px;font-size:11.5px;color:#f9e2af;line-height:1.6;">
           <b>Note:</b> WSL IP changes on every WSL restart. Re-run step 4 (or click <b>Copy Windows Command</b> again) whenever it changes.
-          With a fixed <code>aiInsights.sharePort</code> the firewall rule is permanent — only the <code>netsh portproxy</code> line needs to be re-run.
+          With a fixed <code>aiInsights.sharePort</code> the firewall rule is permanent - only the <code>netsh portproxy</code> line needs to be re-run.
         </div>
       </div>
 
@@ -907,10 +1019,10 @@ export class DashboardProvider {
         ${helpStep(1, 'The server runs on the remote machine', `
           When VS Code is connected via SSH, the share server listens on the <em>remote</em> host, not your laptop. Your phone must be able to reach that host directly.
         `)}
-        ${helpStep(2, 'Option A — remote host is on your LAN', `
+        ${helpStep(2, 'Option A - remote host is on your LAN', `
           Find the remote host IP (<code>hostname -I | awk '{print $1}'</code> on the remote). Set <code>aiInsights.shareHost</code> to that IP. Open the firewall port on the remote (<code>sudo ufw allow &lt;PORT&gt;/tcp</code>). Scan the QR code.
         `)}
-        ${helpStep(3, 'Option B — remote host is behind NAT / cloud VM', `
+        ${helpStep(3, 'Option B - remote host is behind NAT / cloud VM', `
           Forward the port through your SSH tunnel. In a local terminal:<br>
           <code>ssh -L 0.0.0.0:PORT:localhost:PORT user@remote-host</code><br>
           Then set <code>aiInsights.shareHost</code> to your <em>laptop's</em> LAN IP and open that port in your laptop firewall. The QR code will then work on your phone.
@@ -1014,6 +1126,9 @@ export class DashboardProvider {
   <div id="cards-claudeCode" class="cards" style="display:none">${buildProvCards('claudeCode')}</div>
   <div id="cards-codex" class="cards" style="display:none">${buildProvCards('codex')}</div>
   <div id="cards-antigravity" class="cards" style="display:none">${buildProvCards('antigravity')}</div>
+
+  <!-- ── Activity heatmap ──────────────────────────────────────────── -->
+  ${buildActivityHeatmapHtml(m.daily)}
 
   <!-- ── Daily usage chart ─────────────────────────────────────────── -->
   <div class="section">
@@ -1139,6 +1254,68 @@ export class DashboardProvider {
     })()}
   </div>
 
+  <!-- ── Copilot: Code Diff Outcomes ────────────────────────────────── -->
+  <div id="section-copilot-diff" class="section" style="display:none;">
+    <h2>📋 Code Diff Outcomes <span style="font-size:0.7em;font-weight:400;color:var(--text-secondary);">live · resets on reload</span></h2>
+    <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 16px">How many Copilot code-diff suggestions were accepted, updated, or declined this session.</p>
+    ${(() => {
+      const d = diffMetrics ?? { shown: 0, accepted: 0, updated: 0, declined: 0, acceptanceRate: 0, since: new Date() };
+      const total = d.accepted + d.updated + d.declined;
+      const accPct  = total > 0 ? Math.round((d.accepted / total) * 100) : 0;
+      const updPct  = total > 0 ? Math.round((d.updated  / total) * 100) : 0;
+      const decPct  = total > 0 ? Math.round((d.declined / total) * 100) : 0;
+      const accCol  = accPct >= 60 ? 'var(--stage-4)' : accPct >= 30 ? '#f9e2af' : 'var(--stage-1)';
+      const noData  = total === 0;
+      return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin-bottom:16px;">
+      <div class="mini-card">
+        <div class="mini-label">Diffs Shown</div>
+        <div class="mini-val data-text">${d.shown.toLocaleString()}</div>
+        <div style="font-size:0.72em;color:var(--text-secondary);margin-top:4px;">diff views opened</div>
+      </div>
+      <div class="mini-card">
+        <div class="mini-label">✅ Accepted</div>
+        <div class="mini-val data-text" style="color:var(--stage-4);">${d.accepted.toLocaleString()}</div>
+        <div style="font-size:0.72em;color:var(--text-secondary);margin-top:4px;">${noData ? '-' : accPct + '% of resolved'}</div>
+      </div>
+      <div class="mini-card">
+        <div class="mini-label">✏️ Updated</div>
+        <div class="mini-val data-text" style="color:#f9e2af;">${d.updated.toLocaleString()}</div>
+        <div style="font-size:0.72em;color:var(--text-secondary);margin-top:4px;">${noData ? '-' : updPct + '% of resolved'}</div>
+      </div>
+      <div class="mini-card">
+        <div class="mini-label">❌ Declined</div>
+        <div class="mini-val data-text" style="color:var(--stage-1);">${d.declined.toLocaleString()}</div>
+        <div style="font-size:0.72em;color:var(--text-secondary);margin-top:4px;">${noData ? '-' : decPct + '% of resolved'}</div>
+      </div>
+    </div>
+    ${!noData ? `
+    <div style="background:var(--bg-surface-high);border-radius:4px;padding:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-size:0.82em;color:var(--text-secondary);min-width:70px;">Accepted</span>
+        <div style="flex:1;background:var(--bg-base);border-radius:4px;height:6px;overflow:hidden;"><div style="background:var(--stage-4);width:${accPct}%;height:100%;"></div></div>
+        <span class="data-text" style="font-size:0.82em;min-width:32px;">${accPct}%</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-size:0.82em;color:var(--text-secondary);min-width:70px;">Updated</span>
+        <div style="flex:1;background:var(--bg-base);border-radius:4px;height:6px;overflow:hidden;"><div style="background:#f9e2af;width:${updPct}%;height:100%;"></div></div>
+        <span class="data-text" style="font-size:0.82em;min-width:32px;">${updPct}%</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:0.82em;color:var(--text-secondary);min-width:70px;">Declined</span>
+        <div style="flex:1;background:var(--bg-base);border-radius:4px;height:6px;overflow:hidden;"><div style="background:var(--stage-1);width:${decPct}%;height:100%;"></div></div>
+        <span class="data-text" style="font-size:0.82em;min-width:32px;">${decPct}%</span>
+      </div>
+    </div>
+    <p style="font-size:0.75em;color:var(--text-secondary);margin-top:10px;line-height:1.5;">
+      <strong style="color:var(--text-primary);">How it works:</strong>
+      Tracks <code>TabInputTextDiff</code> tabs where the original side is a virtual
+      Copilot snapshot. <em>Accepted</em> = diff applied as-is. <em>Updated</em> = diff
+      applied after user edits. <em>Declined</em> = diff closed without changes.
+    </p>` : `<p style="font-size:0.85em;color:var(--text-secondary);">No code diffs recorded yet. Use Copilot Chat "Apply in Editor" or inline chat to generate diffs.</p>`}`;
+    })()}
+  </div>
+
   <!-- ── MCP Tools ───────────────────────────────────────────────────── -->
   <div class="section">
     <h2 id="mcpTitle">🔌 MCP Tools - This Month</h2>
@@ -1157,6 +1334,23 @@ export class DashboardProvider {
       <thead><tr><th>Repository</th><th>Tokens</th><th>Cost</th><th>Share</th></tr></thead>
       <tbody id="repoTbody">${repoRows || '<tr><td colspan="4" style="color:var(--text-secondary)">No repository data</td></tr>'}</tbody>
     </table>
+  </div>
+
+  <!-- ── Disclaimer / how this works ──────────────────────────────── -->
+  <div class="section" style="background:rgba(0,122,255,0.04);border-color:rgba(0,122,255,0.15);">
+    <h2 style="font-size:0.95em;">ℹ️ About This Data</h2>
+    <p style="font-size:0.82em;color:var(--text-secondary);line-height:1.7;margin-bottom:10px;">
+      AI Insights builds every number on this dashboard by reading <strong>AI session logs stored locally on this machine</strong> - nothing is uploaded anywhere. That local-only approach means these numbers can diverge from what your provider's own billing page shows:
+    </p>
+    <ul style="font-size:0.82em;color:var(--text-secondary);line-height:1.75;padding-left:20px;margin-bottom:10px;">
+      <li>Using the <strong>same subscription on another computer</strong>? That machine's sessions aren't scanned here - totals only reflect activity on this one.</li>
+      <li><strong>Deleting or clearing session history</strong> (chat history, workspace storage, <code>~/.claude</code>, <code>~/.codex</code>, etc.) removes that usage from these calculations after the fact.</li>
+      <li>Providers inject a <strong>system prompt</strong> and tool/agent instructions server-side that local session logs don't always capture, so real input/context size can run higher than what's shown here. Where this applies, the extension exposes a default multiplier - see <code>aiInsights.providers.copilot.inputTokenMultiplier</code> - so you can approximate the missing overhead.</li>
+      <li><strong>GitHub Copilot cache usage isn't tracked.</strong> GitHub's own billing meters cached prompt tokens separately (and cheaper), but Copilot's local session logs don't expose a cache-read/cache-write breakdown to read - it's either folded into the total input count or reported as 0, regardless of the underlying model. Cache Hit Rate / Cache Savings will read 0 for Copilot even if your real bill includes a cache discount; cache numbers for other providers (e.g. Claude Code) are unaffected.</li>
+    </ul>
+    <p style="font-size:0.82em;color:var(--text-secondary);line-height:1.7;">
+      Treat these figures as a <strong>local, best-effort estimate</strong> for spotting trends over time - not an exact reconciliation of your invoice.
+    </p>
   </div>
 
   ${githubUser ? '<button class="copilot-pill" onclick="window.vscode.postMessage({command:\'showPricing\'})">🐙 ' + fmtCredits(copilotMonth.estimatedCost) + ' credits · ' + githubUser.login + '</button>' : ''}
@@ -1259,6 +1453,21 @@ export class DashboardProvider {
           refreshBtn.textContent = '⟳ Refreshing…';
           window.vscode.postMessage({ command: 'refresh' });
           setTimeout(clearAllLoading, 5000);
+        });
+      }
+
+      // Activity heatmap lookback selector — re-scanning session history can take a few seconds
+      var lookbackSelect = document.getElementById('lookbackSelect');
+      if (lookbackSelect) {
+        lookbackSelect.addEventListener('change', function() {
+          var overlay = document.getElementById('navOverlay');
+          var overlayText = document.getElementById('navOverlayText');
+          if (overlay && overlayText) {
+            overlayText.textContent = 'Rescanning ' + lookbackSelect.value + ' days of session history…';
+            overlay.style.display = 'flex';
+          }
+          window.vscode.postMessage({ command: 'setSessionLookbackDays', value: parseInt(lookbackSelect.value, 10) });
+          setTimeout(clearAllLoading, 15000);
         });
       }
 
@@ -1382,7 +1591,7 @@ export class DashboardProvider {
             var el = document.getElementById('cards-' + id);
             if (el) { el.style.display = id === prov ? '' : 'none'; }
           });
-          var copilotOnly = ['section-copilot-budget', 'section-copilot-cache', 'section-copilot-acceptance'];
+          var copilotOnly = ['section-copilot-budget', 'section-copilot-cache', 'section-copilot-acceptance', 'section-copilot-diff'];
           copilotOnly.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) { el.style.display = prov === 'copilot' ? '' : 'none'; }
@@ -1586,13 +1795,16 @@ export class DashboardProvider {
         if (!tbody) { return; }
         var provOrder = ['copilot', 'claudeCode', 'codex', 'antigravity'];
         tbody.innerHTML = provOrder.map(function(pid) {
-          var p = pd[pid] || { totalTokens:0, sessions:0, interactions:0, cacheHitPct:0 };
+          var p = pd[pid] || { totalTokens:0, sessions:0, interactions:0, cacheHitPct:0, cacheTrackable:true };
           var name = PROV_NAMES[pid] || pid;
+          var cacheCell = p.cacheTrackable
+            ? p.cacheHitPct + '%'
+            : '<span title="This provider&#39;s local session logs don&#39;t expose a cache-read/cache-write breakdown, so a hit rate can&#39;t be calculated.">-</span>';
           return '<tr><td>' + name + '</td>'
             + '<td class="data-text">' + fmtN(p.totalTokens) + '</td>'
             + '<td class="data-text">' + p.sessions + '</td>'
             + '<td class="data-text">' + p.interactions + '</td>'
-            + '<td class="data-text">' + p.cacheHitPct + '%</td></tr>';
+            + '<td class="data-text">' + cacheCell + '</td></tr>';
         }).join('');
       }
 

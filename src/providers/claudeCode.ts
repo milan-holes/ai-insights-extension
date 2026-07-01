@@ -63,6 +63,8 @@ export class ClaudeCodeProvider extends BaseProvider {
       let pendingUserPreview: string | undefined;
       const mcpServers = new Set<string>();
       let estimatedBaseContextTokens: number | undefined;
+      let lastPermissionMode: string | undefined;
+      let entrypoint: string | undefined;
 
       for (const line of lines) {
         try {
@@ -110,6 +112,8 @@ export class ClaudeCodeProvider extends BaseProvider {
           if (!startTime) { startTime = ts; }
           endTime = ts;
           if (!cwd && entry.cwd) { cwd = entry.cwd; }
+          if (entry.permissionMode) { lastPermissionMode = entry.permissionMode; }
+          if (!entrypoint && entry.entrypoint) { entrypoint = entry.entrypoint; }
 
           // Capture user message text so we can attach it to the next assistant turn
           const entryRole = entry.role ?? entry.type ?? entry.message?.role;
@@ -181,7 +185,7 @@ export class ClaudeCodeProvider extends BaseProvider {
             cacheWriteTokens,
             totalTokens: inputTokens + outputTokens + thinkingTokens + cacheReadTokens + cacheWriteTokens,
             effectiveContextTokens,
-            mode: entry.type || entry.role || entry.message?.role || 'chat',
+            mode: this.classifyMode(entrypoint, lastPermissionMode, toolCalls),
             toolCalls,
             commandRuns: commandRuns.length > 0 ? commandRuns : undefined,
             fileAccesses: fileAccesses.length > 0 ? fileAccesses : undefined,
@@ -222,6 +226,20 @@ export class ClaudeCodeProvider extends BaseProvider {
         peakEffectiveContextTokens,
       };
     } catch { return null; }
+  }
+
+  /**
+   * Claude Code only reports a permission mode ('default' | 'plan' | 'acceptEdits' | 'bypassPermissions'),
+   * not a discrete ask/edit/agent mode like other providers. Raw terminal usage (entrypoint 'cli', or
+   * missing entrypoint for pre-IDE-integration sessions) is bucketed as 'cli'; IDE-hosted sessions are
+   * inferred from permission mode plus whether the turn actually used tools.
+   */
+  private classifyMode(entrypoint: string | undefined, permissionMode: string | undefined, toolCalls: string[]): string {
+    if (!entrypoint || entrypoint === 'cli') { return 'cli'; }
+    if (permissionMode === 'plan') { return 'plan'; }
+    if (toolCalls.length === 0) { return 'ask'; }
+    if (permissionMode === 'acceptEdits') { return 'edit'; }
+    return 'agent';
   }
 
   private extractTextPreview(content: unknown, maxLen: number): string | undefined {

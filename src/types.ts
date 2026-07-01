@@ -78,7 +78,7 @@ export interface Session {
    */
   activeMcpServers?: string[];
   /**
-   * Token count of the first cache-write in the session — approximates the static overhead
+   * Token count of the first cache-write in the session - approximates the static overhead
    * (system prompt + CLAUDE.md + MCP tool schemas) before any conversation history accumulates.
    */
   estimatedBaseContextTokens?: number;
@@ -337,6 +337,22 @@ export interface AcceptanceMetrics {
   since: Date;
 }
 
+/** Live code-diff outcome metrics tracked since extension activation */
+export interface DiffMetrics {
+  /** Number of Copilot diff views opened (TabInputTextDiff with virtual original) */
+  shown: number;
+  /** Diffs applied exactly as proposed (accepted without edits) */
+  accepted: number;
+  /** Diffs applied after user modified the suggestion */
+  updated: number;
+  /** Diffs dismissed without applying any change */
+  declined: number;
+  /** accepted / (accepted + updated + declined); 0 when no outcomes yet */
+  acceptanceRate: number;
+  /** Wall-clock time when tracking began (extension activation) */
+  since: Date;
+}
+
 // ─── Active Session Tracking ──────────────────────────────────────────────────
 
 export type LiveBudgetType = 'daily' | 'weekly' | 'monthly' | 'fixed';
@@ -345,9 +361,9 @@ export interface LiveBudgetConfig {
   type: LiveBudgetType;
   limitTokens?: number;
   limitUsd?: number;
-  /** ISO date string — start of the fixed window */
+  /** ISO date string - start of the fixed window */
   fixedWindowStart?: string;
-  /** ISO date string — end of the fixed window */
+  /** ISO date string - end of the fixed window */
   fixedWindowEnd?: string;
 }
 

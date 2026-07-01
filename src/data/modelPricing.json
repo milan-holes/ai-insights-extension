@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "lastUpdated": "2026-06-11",
+    "lastUpdated": "2026-07-01",
     "sources": [
       { "name": "GitHub Copilot Models & Pricing", "url": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing" },
       { "name": "Anthropic Claude Models Overview", "url": "https://platform.claude.com/docs/en/about-claude/models/overview" },
@@ -193,6 +193,16 @@
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
       "cacheCreationCostPerMillion": 3.75,
+      "category": "Versatile"
+    },
+    "claude-sonnet-5": {
+      "displayName": "Claude Sonnet 5",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 10.00,
+      "cachedInputCostPerMillion": 0.20,
+      "cacheCreationCostPerMillion": 2.50,
       "category": "Versatile"
     },
     "claude-opus-4.5": {

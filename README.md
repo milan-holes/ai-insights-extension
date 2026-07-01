@@ -19,12 +19,12 @@ Displays current day and 30-day token usage directly in the VS Code status bar.
 
 Track usage across AI coding assistants simultaneously:
 
-| Provider           | Data Source                        | Token Data                                       |
-| ------------------ | ---------------------------------- | ------------------------------------------------ |
+| Provider           | Data Source                                                              | Token Data                                       |
+| ------------------ | ------------------------------------------------------------------------ | ------------------------------------------------ |
 | **GitHub Copilot** | `workspaceStorage/*/chatSessions/` (VS Code, Cursor, VSCodium, Insiders) | Actual counts when available, else estimated     |
-| **Antigravity**    | `~/.gemini/antigravity/brain/`     | Estimated from conversation text                 |
-| **Claude Code**    | `~/.claude/projects/`              | Actual input/output/cache token counts           |
-| **Codex**          | `~/.codex/sessions/`               | Actual usage snapshots from local Codex rollouts |
+| **Antigravity**    | `~/.gemini/antigravity/brain/`                                           | Estimated from conversation text                 |
+| **Claude Code**    | `~/.claude/projects/`                                                    | Actual input/output/cache token counts           |
+| **Codex**          | `~/.codex/sessions/`                                                     | Actual usage snapshots from local Codex rollouts |
 
 ### 📈 Dashboard Views
 
@@ -39,6 +39,17 @@ Per-model pricing for 30+ models across OpenAI, Anthropic, and Google:
 - Cache-aware pricing (Anthropic prompt caching, OpenAI prefix matching)
 - Input/output token cost breakdown
 - Daily and projected yearly cost
+
+## ⚠️ Accuracy & Limitations
+
+AI Insights computes every metric from **AI session logs stored locally on your machine** - nothing is uploaded. Because it's local-only, the numbers can diverge from your provider's official billing/usage page:
+
+- **Multiple computers, same subscription** - if you use the same account from another machine, that machine's sessions aren't scanned here. Totals only reflect activity on the machine running the extension.
+- **Cleared/deleted history** - clearing chat history, workspace storage, or provider log directories (`~/.claude`, `~/.codex`, etc.) removes that usage from future calculations. Past totals already shown are not retroactively corrected.
+- **Hidden system prompts** - providers inject a system prompt plus tool/agent instructions server-side that aren't always exposed in local session logs, so real input/context size can be higher than what's shown. Where this applies (currently Copilot JSON sessions), the `aiInsights.providers.copilot.inputTokenMultiplier` setting lets you set a default multiplier to approximate the missing overhead.
+- **No GitHub Copilot cache tracking** - GitHub's usage-based billing meters cached prompt tokens separately (and at a discount), but Copilot's local session logs don't expose a cache-read/cache-write breakdown - the underlying `assistant.usage` events report `cacheReadTokens`/`cacheWriteTokens` as `0` regardless of model ([github/copilot-sdk#1073](https://github.com/github/copilot-sdk/issues/1073)), and enabling Copilot's chat debug file logging only writes a combined input-token count, not a separate cache figure ([microsoft/vscode#311186](https://github.com/microsoft/vscode/issues/311186)). So Cache Hit Rate / Cache Savings will show `0%`/`$0` for Copilot even if your real invoice includes a cache discount. Cache metrics for providers with real per-request cache counts (e.g. Claude Code) are unaffected.
+
+Treat these numbers as a **local, best-effort estimate** for tracking trends - not an exact reconciliation of your invoice.
 
 ## Install
 
@@ -121,23 +132,23 @@ npx @vscode/vsce package
 
 ### GitHub Copilot
 
-Supported IDEs (sessions stored as JSON — readable):
+Supported IDEs (sessions stored as JSON - readable):
 
-| IDE | Linux | macOS | Windows |
-|-----|-------|-------|---------|
-| VS Code | `~/.config/Code/User/workspaceStorage/` | `~/Library/Application Support/Code/User/workspaceStorage/` | `%APPDATA%\Code\User\workspaceStorage\` |
+| IDE              | Linux                                              | macOS                                                                  | Windows                                            |
+| ---------------- | -------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------- |
+| VS Code          | `~/.config/Code/User/workspaceStorage/`            | `~/Library/Application Support/Code/User/workspaceStorage/`            | `%APPDATA%\Code\User\workspaceStorage\`            |
 | VS Code Insiders | `~/.config/Code - Insiders/User/workspaceStorage/` | `~/Library/Application Support/Code - Insiders/User/workspaceStorage/` | `%APPDATA%\Code - Insiders\User\workspaceStorage\` |
-| Cursor | `~/.config/Cursor/User/workspaceStorage/` | `~/Library/Application Support/Cursor/User/workspaceStorage/` | `%APPDATA%\Cursor\User\workspaceStorage\` |
-| VSCodium | `~/.config/VSCodium/User/workspaceStorage/` | `~/Library/Application Support/VSCodium/User/workspaceStorage/` | `%APPDATA%\VSCodium\User\workspaceStorage\` |
+| Cursor           | `~/.config/Cursor/User/workspaceStorage/`          | `~/Library/Application Support/Cursor/User/workspaceStorage/`          | `%APPDATA%\Cursor\User\workspaceStorage\`          |
+| VSCodium         | `~/.config/VSCodium/User/workspaceStorage/`        | `~/Library/Application Support/VSCodium/User/workspaceStorage/`        | `%APPDATA%\VSCodium\User\workspaceStorage\`        |
 
-WSL is also supported — the extension automatically scans Windows-side AppData paths via `/mnt/c/Users/`.
+WSL is also supported - the extension automatically scans Windows-side AppData paths via `/mnt/c/Users/`.
 
-**Not supported** (binary session formats, not parseable):
+**Not fully supported** (binary session formats, not parseable):
 
-| IDE | Reason |
-|-----|--------|
+| IDE                                                | Reason                                                                            |
+| -------------------------------------------------- | --------------------------------------------------------------------------------- |
 | JetBrains (PyCharm, WebStorm, PhpStorm, IntelliJ…) | Sessions stored in Xodus binary DB (`.idea/copilot/chatSessions/`), no JSON files |
-| Visual Studio | Sessions stored as binary files (`.vs/<project>/copilot-chat/sessions/`) |
+| Visual Studio                                      | Sessions stored as binary files (`.vs/<project>/copilot-chat/sessions/`)          |
 
 ### Antigravity
 

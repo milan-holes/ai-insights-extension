@@ -11,6 +11,7 @@ export type NavTab =
   | 'benchmark'
   | 'claudeAccount'
   | 'repoAnalysis'
+  | 'aiStructure'
   | 'replay'
   | 'none';
 
@@ -18,20 +19,21 @@ interface TabDef { id: NavTab; label: string; cmd: string; loadLabel: string; }
 
 const NAV_TABS: TabDef[] = [
   { id: 'overview', label: 'Dashboard', cmd: 'showDashboard', loadLabel: 'Loading dashboard…' },
+  { id: 'aiStructure', label: 'Repository', cmd: 'showAIStructure', loadLabel: 'Loading repository…' },
   { id: 'sessions', label: 'Sessions', cmd: 'showSessions', loadLabel: 'Loading sessions…' },
   { id: 'promptHistory', label: 'Prompts', cmd: 'showPromptHistory', loadLabel: 'Loading prompt history…' },
   { id: 'usage', label: 'Workspaces', cmd: 'showUsageAnalysis', loadLabel: 'Loading workspace analysis…' },
   { id: 'pricing', label: 'Copilot', cmd: 'showPricing', loadLabel: 'Loading GitHub Copilot…' },
   { id: 'tokenCalculator', label: 'Calculator', cmd: 'showTokenCalculator', loadLabel: 'Loading token calculator…' },
-  { id: 'benchmark', label: 'Benchmark', cmd: 'showBenchmark', loadLabel: 'Loading benchmark…' },
   { id: 'claudeAccount', label: 'Claude', cmd: 'showClaudeAccount', loadLabel: 'Loading Claude…' },
   { id: 'diagnostics', label: 'Diagnostics', cmd: 'showDiagnostics', loadLabel: 'Loading diagnostics…' },
+  // { id: 'benchmark', label: 'Benchmark', cmd: 'showBenchmark', loadLabel: 'Loading benchmark…' },
   // { id: 'repoAnalysis', label: 'Repo Graph', cmd: 'showRepoAnalysis', loadLabel: 'Loading repo analysis…' },
 ];
 
 const RIGHT_NAV_TABS = new Set<NavTab>(['pricing', 'claudeAccount']);
 
-/** Core nav system CSS — paste into any view's <style> block. */
+/** Core nav system CSS - paste into any view's <style> block. */
 export function navCss(): string {
   return `
   .ns-topbar { display: flex; align-items: center; justify-content: space-between; height: 52px; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--bg-base); position: sticky; top: 0; z-index: 20; flex-shrink: 0; }
@@ -187,5 +189,6 @@ export const NAV_COMMANDS: Record<string, string> = {
   showBenchmark: 'aiInsights.showBenchmark',
   showClaudeAccount: 'aiInsights.showClaudeAccount',
   showRepoAnalysis: 'aiInsights.showRepoAnalysis',
+  showAIStructure: 'aiInsights.showAIStructure',
   showSessionReplay: 'aiInsights.showSessionReplay',
 };

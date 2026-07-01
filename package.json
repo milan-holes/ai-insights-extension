@@ -2,7 +2,7 @@
   "name": "ai-insights",
   "displayName": "AI Insights - Token Tracker",
   "description": "Track token usage, costs, and AI metrics across GitHub Copilot, Antigravity, Claude Code, and Codex.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "thewalking-dev",
   "license": "MIT",
   "icon": "assets/logo.png",
@@ -128,6 +128,12 @@
         "icon": "$(settings-gear)"
       },
       {
+        "command": "aiInsights.showAIStructure",
+        "title": "Show AI Structure Analysis",
+        "category": "AI Insights",
+        "icon": "$(symbol-structure)"
+      },
+      {
         "command": "aiInsights.showRepoAnalysis",
         "title": "Show Repo Analysis & Agent Handoff",
         "category": "AI Insights",
@@ -152,6 +158,12 @@
           "command": "aiInsights.showDashboard",
           "group": "navigation"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "aiInsights.showRepoAnalysis",
+          "when": "false"
+        }
       ]
     },
     "configuration": {
@@ -166,6 +178,20 @@
           "type": "boolean",
           "default": true,
           "description": "Enable GitHub Copilot session log tracking."
+        },
+        "aiInsights.providers.copilot.inputTokenMultiplier": {
+          "type": "number",
+          "default": 1.0,
+          "minimum": 0.1,
+          "maximum": 20,
+          "description": "Multiplier applied to estimated input tokens for Copilot sessions that don't have real token counts (JSON session files). The VS Code native credit tracker counts the full context — system prompt, agent instructions, workspace info, tool results — which Copilot's JSON logs don't expose. Agent-mode sessions typically have 5–15× more input tokens than the raw user message alone. JSONL sessions are unaffected when they contain real promptTokens."
+        },
+        "aiInsights.providers.copilot.maxSessionSnapshots": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 100,
+          "maximum": 20000,
+          "description": "Maximum number of Copilot sessions kept in the persistent snapshot store (survives Copilot deleting/overwriting its own chat files). Oldest snapshots by end time are evicted once this limit is exceeded."
         },
         "aiInsights.providers.antigravity.enabled": {
           "type": "boolean",

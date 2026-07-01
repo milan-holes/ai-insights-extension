@@ -44,9 +44,11 @@ export class CopilotProvider extends BaseProvider {
   readonly displayName = 'GitHub Copilot';
 
   private readonly sessionDirs: string[];
+  private readonly inputTokenMultiplier: number;
 
-  constructor() {
+  constructor(inputTokenMultiplier = 1.0) {
     super();
+    this.inputTokenMultiplier = Math.max(0.1, inputTokenMultiplier);
     this.sessionDirs = this.buildSessionPaths();
   }
 
@@ -217,7 +219,11 @@ export class CopilotProvider extends BaseProvider {
         endTime = timestamp;
 
         const model = this.getModelFromRequest(req, data.model || 'gpt-5-mini');
-        const inputText = this.extractInputText(req);
+        const renderedInput = [
+          this.extractRenderedText(req.result?.metadata?.renderedUserMessage),
+          this.extractRenderedText(req.result?.metadata?.renderedGlobalContext),
+        ].filter(s => s.length > 0).join('\n');
+        const inputText = renderedInput || this.extractInputText(req);
         const outputText = this.extractResponseText(req.response || req.responses);
 
         // Use actual token counts if available, otherwise estimate.
@@ -244,8 +250,7 @@ export class CopilotProvider extends BaseProvider {
           'usage.cache_creation_input_tokens', 'usage.cache_write_input_tokens',
           'cacheWriteTokens',
         ]);
-        const estimatedInputTokens =
-          this.estimateTokens(inputText);
+        const estimatedInputTokens = Math.round(this.estimateTokens(inputText) * this.inputTokenMultiplier);
         const inputTokens = Math.max(rawInputTokens || estimatedInputTokens, cacheReadTokens + cacheWriteTokens);
 
         const toolCalls: string[] = [];
@@ -354,7 +359,8 @@ export class CopilotProvider extends BaseProvider {
             'promptTokens', 'tokens.input', 'tokens.inputTokens', 'tokens.prompt', 'tokens.promptTokens',
             'usage.input_tokens', 'usage.prompt_tokens', 'usage.inputTokens', 'usage.promptTokens',
           ]);
-          const inputTokens = Math.max(rawInputTokens || this.estimateTokens(entry.prompt || entry.message || ''), cacheReadTokens + cacheWriteTokens);
+          const estimatedInput = Math.round(this.estimateTokens(entry.prompt || entry.message || '') * this.inputTokenMultiplier);
+          const inputTokens = Math.max(rawInputTokens || estimatedInput, cacheReadTokens + cacheWriteTokens);
           const outputTokens = this.pickTokenCount(entry, [
             'completionTokens', 'tokens.output', 'tokens.outputTokens', 'tokens.completion', 'tokens.completionTokens',
             'usage.output_tokens', 'usage.completion_tokens', 'usage.outputTokens', 'usage.completionTokens',
@@ -465,9 +471,9 @@ export class CopilotProvider extends BaseProvider {
 
       const model = this.getModelFromRequest(request, 'gpt-5-mini');
       const renderedInput = [
-        request.result?.metadata?.renderedUserMessage,
-        request.result?.metadata?.renderedGlobalContext,
-      ].filter((value): value is string => typeof value === 'string' && value.length > 0).join('\n');
+        this.extractRenderedText(request.result?.metadata?.renderedUserMessage),
+        this.extractRenderedText(request.result?.metadata?.renderedGlobalContext),
+      ].filter(s => s.length > 0).join('\n');
       const inputText = renderedInput || this.extractInputText(request);
       const outputText = this.extractResponseText(request.response || request.responses);
 
@@ -481,7 +487,7 @@ export class CopilotProvider extends BaseProvider {
         'result.outputTokens', 'result.completionTokens',
         'result.metadata.outputTokens', 'result.usage.outputTokens', 'result.usage.completionTokens',
       ]) || this.estimateTokens(outputText);
-      const inputTokens = rawInputTokens || this.estimateTokens(inputText);
+      const inputTokens = rawInputTokens || Math.round(this.estimateTokens(inputText) * this.inputTokenMultiplier);
       const thinkingTokens = this.estimateTokens(this.extractThinkingText(request.response || request.responses));
 
       interactions.push({
@@ -827,6 +833,19 @@ export class CopilotProvider extends BaseProvider {
 
   private normalizeModelId(model: string): string {
     return model.replace(/^copilot\//, '').replace(/^github-copilot\//, '').trim() || 'gpt-5-mini';
+  }
+
+  // renderedUserMessage / renderedGlobalContext are stored as [{type:1, text:"..."}, {type:3,...}]
+  // type 1 = text block, type 3 = cache marker (no text)
+  private extractRenderedText(value: unknown): string {
+    if (typeof value === 'string') { return value; }
+    if (Array.isArray(value)) {
+      return value
+        .filter((item): item is { type: number; text: string } => item?.type === 1 && typeof item?.text === 'string')
+        .map(item => item.text)
+        .join('\n');
+    }
+    return '';
   }
 
   private extractInputText(request: any): string {
