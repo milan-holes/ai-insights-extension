@@ -94,6 +94,7 @@ export class SessionsViewProvider {
             const analysis = computeContextRotAnalysis(sess, SessionsViewProvider._sessions);
             const detail = {
               id: sess.id,
+              provider: sess.provider,
               workspace: sess.workspace || '',
               interactions: sess.interactions.map(i => ({
                 ts: i.timestamp instanceof Date ? i.timestamp.toISOString() : String(i.timestamp),
@@ -104,6 +105,7 @@ export class SessionsViewProvider {
                 thinkingTokens: i.thinkingTokens,
                 cacheReadTokens: i.cacheReadTokens,
                 cacheWriteTokens: i.cacheWriteTokens,
+                cacheTokensEstimated: i.cacheTokensEstimated || false,
                 toolCalls: i.toolCalls || [],
                 commandRuns: i.commandRuns || [],
                 fileAccesses: i.fileAccesses || [],
@@ -789,6 +791,9 @@ export class SessionsViewProvider {
     parts.push('    h+=\'</div>\';');
     // Context Budget Allocation
     parts.push('    h+=\'<div class="ov-section"><div class="ov-section-title">Context Budget Allocation</div><div class="ov-section-sub">How your total token spend was used — teaches which parts of the context are costly</div>\';');
+    parts.push('    if(det&&det.provider==="copilot"&&det.interactions&&det.interactions.some(function(i){return i.cacheTokensEstimated;})){');
+    parts.push('      h+=\'<div class="ov-section-sub" style="margin-top:-6px">🧮 Cached/fresh split below is a calculated estimate for GitHub Copilot, not measured data — see the Copilot provider wiki page.</div>\';');
+    parts.push('    }');
     parts.push('    if(a.contextBudgetAllocation){');
     parts.push('      var ba=a.contextBudgetAllocation;');
     parts.push('      h+=\'<div class="ov-budget-wrap"><div class="ov-budget-chart-box"><canvas id="ovBudgetChart" width="140" height="140"></canvas></div><div class="ov-budget-legend">\';');
@@ -891,10 +896,11 @@ export class SessionsViewProvider {
     parts.push('        if(it.toolCalls&&it.toolCalls.length){h+=\'<div class="ov-itl-tools">\';var faCopy=(it.fileAccesses||[]).slice();it.toolCalls.slice(0,12).forEach(function(t){var fi=-1;for(var k=0;k<faCopy.length;k++){if(faCopy[k].tool.toLowerCase()===t.toLowerCase()){fi=k;break;}}if(fi>=0){var fa=faCopy.splice(fi,1)[0];var bn=fa.path.split("/").pop()||fa.path;h+=\'<span class="ov-itl-tool">\'+esc(t)+\'<span class="ov-itl-tool-fname">\'+esc(bn)+\'</span></span>\';}else{h+=\'<span class="ov-itl-tool">\'+esc(t)+\'</span>\';}});if(it.toolCalls.length>12)h+=\'<span class="ov-itl-tool">+\'+(it.toolCalls.length-12)+\'</span>\';h+=\'</div>\';}');
     parts.push('        if(it.commandRuns&&it.commandRuns.length){h+=\'<div class="ov-itl-tools">\';it.commandRuns.slice(0,3).forEach(function(cmd){h+=\'<span class="ov-itl-tool" title="\'+esc(cmd)+\'">$\'+esc(cmd.slice(0,80))+\'</span>\';});if(it.commandRuns.length>3)h+=\'<span class="ov-itl-tool">+\'+(it.commandRuns.length-3)+\' commands</span>\';h+=\'</div>\';}');
     parts.push('        var ctxToks=it.inputTokens+(it.cacheReadTokens||0);');
+    parts.push('        var cacheCalcTag=it.cacheTokensEstimated?\' <span style="opacity:.7">(calc.)</span>\':\'\';');
     parts.push('        h+=\'<div class="ov-itl-toks"><span class="ov-tok ov-tok-i" title="Total context size (new input + cache read)">\\u2191 \'+fmt(ctxToks)+\'</span><span class="ov-tok ov-tok-o" title="Output tokens">\\u2193 \'+fmt(it.outputTokens)+\'</span>\';');
-    parts.push('        if(it.cacheReadTokens>0)h+=\'<span class="ov-tok ov-tok-c" title="Cache read tokens (included in context \\u2191)">\\u26a1 \'+fmt(it.cacheReadTokens)+\'</span>\';');
+    parts.push('        if(it.cacheReadTokens>0)h+=\'<span class="ov-tok ov-tok-c" title="Cache read tokens (included in context \\u2191)\'+(it.cacheTokensEstimated?\' - calculated estimate, not measured by GitHub Copilot\':\'\')+\'">\\u26a1 \'+fmt(it.cacheReadTokens)+cacheCalcTag+\'</span>\';');
     parts.push('        if(it.thinkingTokens>0)h+=\'<span class="ov-tok ov-tok-t" title="Thinking tokens">think \'+fmt(it.thinkingTokens)+\'</span>\';');
-    parts.push('        if(it.cacheWriteTokens>0)h+=\'<span class="ov-tok ov-tok-w" title="Cache write tokens">\\u270d \'+fmt(it.cacheWriteTokens)+\'</span>\';');
+    parts.push('        if(it.cacheWriteTokens>0)h+=\'<span class="ov-tok ov-tok-w" title="Cache write tokens">\\u270d \'+fmt(it.cacheWriteTokens)+cacheCalcTag+\'</span>\';');
     parts.push('        h+=\'</div></div></div>\';');
     parts.push('      });');
     parts.push('      h+=\'</div>\';');

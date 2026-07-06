@@ -9,3 +9,13 @@ esbuild.js
 **/*.map
 wiki/**
 .others/**
+scripts/**
+screenshots/**
+docs/**
+.claude/**
+tmp-calculator
+agent-handoff.md
+.cursorrules
+.codex
+.github/**
+CLAUDE.md

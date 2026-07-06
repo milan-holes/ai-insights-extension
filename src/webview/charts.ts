@@ -129,8 +129,8 @@ export class ChartsProvider {
       <div class="summary-value data-text">${avgDaily >= 1000 ? (avgDaily / 1000).toFixed(0) + 'K' : avgDaily}</div>
     </div>
 
-    <div class="summary-item">
-      <div class="summary-label">Cache Hit Rate</div>
+    <div class="summary-item" ${m.byProvider.copilot?.cacheTokensEstimated ? `title="Blended across all providers. Includes calculated (not measured) GitHub Copilot cache estimates - see the Copilot provider wiki page."` : ''}>
+      <div class="summary-label">Cache Hit Rate${m.byProvider.copilot?.cacheTokensEstimated ? ' 🧮' : ''}</div>
       <div class="summary-value data-text" style="color:${cacheHitPct >= 20 ? '#39FF14' : '#f9e2af'}">${cacheHitPct}%</div>
     </div>
 
@@ -150,6 +150,7 @@ export class ChartsProvider {
   </div>
 
   <div class="chart-container hidden" id="chart-cache">
+    ${m.byProvider.copilot?.cacheTokensEstimated ? `<p style="font-size:0.8em;color:var(--text-secondary);margin-bottom:12px;">🧮 Includes calculated (not measured) GitHub Copilot cache estimates for periods without real debug-log telemetry - see the Copilot provider wiki page.</p>` : ''}
     <div class="chart-wrap"><canvas id="cacheChart"></canvas></div>
   </div>
   <div class="chart-container hidden" id="chart-model">

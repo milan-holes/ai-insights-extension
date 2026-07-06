@@ -102,6 +102,45 @@ function buildMcpChips(toolCalls: Record<string, number>): string {
   ).join('');
 }
 
+const CONTEXT_REF_META: Record<string, { label: string; icon: string }> = {
+  file: { label: '#file', icon: '📄' },
+  selection: { label: '#selection', icon: '✂️' },
+  codebase: { label: '#codebase', icon: '🗂️' },
+  changes: { label: '#changes', icon: '📝' },
+  terminalLastCommand: { label: '#terminalLastCommand', icon: '⌨️' },
+  terminalSelection: { label: '#terminalSelection', icon: '⌨️' },
+  problems: { label: '#problems', icon: '⚠️' },
+  workspace: { label: '@workspace', icon: '🏗️' },
+  terminal: { label: '@terminal', icon: '💻' },
+  vscode: { label: '@vscode', icon: '🧩' },
+};
+
+function buildContextRefTable(engagement: AggregatedMetrics['contextEngagement']): string {
+  const entries = Object.entries(engagement.byType).sort(([, a], [, b]) => b - a);
+  if (entries.length === 0) {
+    return '<p style="color:var(--text-secondary);">No explicit context references (#file, @workspace, ...) detected this month.</p>';
+  }
+  const rows = entries.map(([type, count]) => {
+    const meta = CONTEXT_REF_META[type] || { label: type, icon: '🔖' };
+    const pct = engagement.totalRefs > 0 ? Math.round((count / engagement.totalRefs) * 100) : 0;
+    const bar = `<div style="background:var(--bg-base);border-radius:2px;height:4px;overflow:hidden;min-width:80px;">
+      <div style="background:var(--primary);width:${pct}%;height:100%;"></div></div>`;
+    return `<tr>
+      <td>${meta.icon} ${meta.label}</td>
+      <td class="data-text" style="text-align:right;">${count.toLocaleString()}</td>
+      <td style="text-align:right;color:var(--text-secondary);font-size:0.85em;">${pct}%</td>
+      <td style="width:120px;padding-right:16px;">${bar}</td>
+    </tr>`;
+  }).join('');
+  return `<table>
+    <thead><tr>
+      <th>Reference</th><th style="text-align:right;">Count</th>
+      <th style="text-align:right;">Share</th><th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 function buildHygieneTable(reports: RepositoryHygieneReport[]): string {
   if (reports.length === 0) { return '<p style="color:var(--text-secondary);">No repository data from this month.</p>'; }
   const missingAll = reports.filter(r =>
@@ -454,7 +493,7 @@ function buildAcceptanceSection(a: AcceptanceMetrics): string {
 
 interface RoiConfig { hourlyRate: number; tokensPerHourSaved: number; }
 
-function getHtml(_m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acceptance: AcceptanceMetrics, _roiConfig: RoiConfig, refreshing = false, logoUri = ''): string {
+function getHtml(m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acceptance: AcceptanceMetrics, _roiConfig: RoiConfig, refreshing = false, logoUri = ''): string {
   const knownReports = reports.filter(r => r.repoPath && r.repoPath !== 'Path unresolved');
 
   return `<!DOCTYPE html>
@@ -518,6 +557,16 @@ function getHtml(_m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acc
     <h2>🔍 Repository Hygiene Analysis</h2>
     <p class="subtitle">Configuration completeness score per repository (5 categories × 20 pts - fresh=20, stale=10, missing=0)</p>
     ${buildHygieneScoreTable(knownReports)}
+  </div>
+  <div class="section">
+    <h2>🔗 Context Anchoring</h2>
+    <p class="subtitle">Explicit context references (#file, @workspace, ...) used in prompts - ${Math.round(m.contextEngagement.refRate * 100)}% of interactions with prompt text anchor context this way</p>
+    <div class="cards" style="margin-bottom:16px;">
+      <div class="mini-card"><div class="mini-label">Total References</div><div class="mini-val data-text">${m.contextEngagement.totalRefs.toLocaleString()}</div></div>
+      <div class="mini-card"><div class="mini-label">Anchoring Rate</div><div class="mini-val data-text">${Math.round(m.contextEngagement.refRate * 100)}%</div></div>
+      <div class="mini-card"><div class="mini-label">Interactions Anchored</div><div class="mini-val data-text">${m.contextEngagement.interactionsWithRefs.toLocaleString()}</div></div>
+    </div>
+    ${buildContextRefTable(m.contextEngagement)}
   </div>
 </div><!-- /ns-content -->
 

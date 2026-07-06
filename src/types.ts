@@ -32,6 +32,8 @@ export interface Interaction {
   fileAccesses?: Array<{ tool: string; path: string }>;
   /** First ~200 chars of the user message that triggered this interaction */
   promptPreview?: string;
+  /** Counts of explicit context-anchoring tokens (#file, @workspace, ...) found in the full prompt text */
+  contextRefs?: Record<string, number>;
   /** Web search requests made by server-side tools in this interaction */
   webSearchRequests?: number;
   /** Web fetch requests made by server-side tools in this interaction */
@@ -44,6 +46,12 @@ export interface Interaction {
   preCompactionTokens?: number;
   /** Context token count immediately after compaction */
   postCompactionTokens?: number;
+  /**
+   * True when cacheReadTokens/cacheWriteTokens were derived from a turn-over-turn
+   * heuristic rather than read from real provider data (GitHub Copilot only - its
+   * local logs never report actual cache token counts).
+   */
+  cacheTokensEstimated?: boolean;
 }
 
 /** A normalized session from any provider */
@@ -84,6 +92,8 @@ export interface Session {
   estimatedBaseContextTokens?: number;
   /** Peak effective context size seen in any turn: max(inputTokens + cacheReadTokens + cacheWriteTokens). */
   peakEffectiveContextTokens?: number;
+  /** True when any interaction's cache tokens are heuristic estimates rather than real provider data. */
+  cacheTokensEstimated?: boolean;
 }
 
 /** Aggregated daily usage for a provider */
@@ -102,6 +112,7 @@ export interface DailyUsage {
   models: Record<string, number>; // model -> token count
   toolCalls: Record<string, number>; // tool -> call count
   repositories: Record<string, number>; // repo -> token count
+  contextRefs: Record<string, number>; // context-ref type -> count
 }
 
 /** Metrics for a single provider or aggregate */
@@ -113,6 +124,8 @@ export interface ProviderMetrics {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   cacheSavingsUsd: number;
+  /** True if any session contributing to cacheReadTokens/cacheWriteTokens used the calculated heuristic rather than real provider telemetry */
+  cacheTokensEstimated: boolean;
   sessions: number;
   interactions: number;
   averageTokensPerSession: number;
@@ -254,6 +267,29 @@ export interface SessionComplexityMetrics {
   highestCostSession: { id: string; cost: number; tokens: number } | null;
 }
 
+/** Rollup of explicit context-anchoring token usage (#file, @workspace, ...) across all sessions */
+export interface ContextEngagement {
+  /** Total count of all context-reference tokens found, across all types */
+  totalRefs: number;
+  /** Count per reference type (file, selection, workspace, ...) */
+  byType: Record<string, number>;
+  /** Number of interactions that contained at least one context reference */
+  interactionsWithRefs: number;
+  /** interactionsWithRefs / total interactions with prompt text available */
+  refRate: number;
+}
+
+/** Compaction and marathon-session hygiene signals, rolled up across all sessions */
+export interface SessionHygieneSummary {
+  manualCompactions: number;
+  autoCompactions: number;
+  /** Sum of (preCompactionTokens - postCompactionTokens) across all compaction events */
+  tokensReclaimed: number;
+  /** Sessions flagged with the 'long_turn_chain' overload signal (>80 turns or >180min) */
+  marathonSessions: number;
+  longestMarathonMinutes: number;
+}
+
 /** Full aggregated output returned by aggregateSessions() */
 export interface AggregatedMetrics {
   today: ProviderMetrics;
@@ -276,6 +312,8 @@ export interface AggregatedMetrics {
   roi: ROIMetrics;
   anomaly: AnomalyFlags;
   sessionComplexity: SessionComplexityMetrics;
+  contextEngagement: ContextEngagement;
+  sessionHygiene: SessionHygieneSummary;
 }
 
 /** Whether a config file exists and when it was last modified */
@@ -569,5 +607,14 @@ export interface DiagnosticReport {
     totalTokens: number;
     dateRange: string;
   };
+  settings: {
+    key: string;
+    type: string;
+    value: unknown;
+    default: unknown;
+    description: string;
+    enum?: string[];
+    enumDescriptions?: string[];
+  }[];
   timestamp: string;
 }

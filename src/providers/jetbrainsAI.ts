@@ -42,6 +42,7 @@ import * as os from 'os';
 import { BaseProvider } from './base';
 import { calculateCost } from '../core/costEstimation';
 import { Session, Interaction } from '../types';
+import { extractContextRefs } from '../core/contextReferences';
 
 export class JetBrainsAIProvider extends BaseProvider {
   readonly id = 'jetbrainsAI' as const;
@@ -49,9 +50,9 @@ export class JetBrainsAIProvider extends BaseProvider {
 
   private readonly sessionRoots: string[];
 
-  constructor() {
+  constructor(additionalPaths: string[] = []) {
     super();
-    this.sessionRoots = this.buildSessionRoots();
+    this.sessionRoots = this.buildSessionRoots(additionalPaths);
   }
 
   /**
@@ -59,7 +60,7 @@ export class JetBrainsAIProvider extends BaseProvider {
    * On Linux we probe the native home dir and, when running under WSL2,
    * also every Windows user home accessible at /mnt/c/Users/<name>/.
    */
-  private buildSessionRoots(): string[] {
+  private buildSessionRoots(additionalPaths: string[]): string[] {
     const roots = new Set<string>();
     roots.add(path.join(os.homedir(), '.copilot', 'jb'));
 
@@ -69,6 +70,8 @@ export class JetBrainsAIProvider extends BaseProvider {
         roots.add(path.join(winHome, '.copilot', 'jb'));
       }
     }
+
+    for (const p of additionalPaths) { roots.add(this.expandHome(p)); }
 
     return [...roots];
   }
@@ -188,6 +191,7 @@ export class JetBrainsAIProvider extends BaseProvider {
         mode: sawToolCall ? 'agent' : 'ask',
         toolCalls: [...currentToolCalls],
         promptPreview: pendingInputText.substring(0, 200) || undefined,
+        contextRefs: extractContextRefs(pendingInputText),
       });
       pendingInputText = '';
       currentOutputText = '';

@@ -64,6 +64,7 @@ export class PricingViewProvider {
         switch (message.command) {
           case 'connectGitHub': vscode.commands.executeCommand('aiInsights.connectGitHub'); break;
           case 'disconnectGitHub': vscode.commands.executeCommand('aiInsights.disconnectGitHub'); break;
+          case 'enableCopilotRealCacheData': vscode.commands.executeCommand('aiInsights.enableCopilotRealCacheData'); break;
         }
       },
       undefined,
@@ -159,6 +160,12 @@ export class PricingViewProvider {
       const copilotMonth = metrics.currentMonthByProvider.copilot;
       const copilotLastMonth = metrics.lastMonthByProvider.copilot;
       const budgetPct = Math.min(100, metrics.budget.budgetUtilizationPct);
+      const copilotChatExtensionInstalled = !!vscode.extensions.getExtension('github.copilot-chat');
+      const copilotDebugLoggingEnabled = vscode.workspace.getConfiguration('github.copilot.chat').get<boolean>('agentDebugLog.fileLogging.enabled', false);
+      const copilotHasUsage = copilotMonth.totalTokens > 0 || copilotLastMonth.totalTokens > 0;
+      const enableRealCacheDataButton = (copilotChatExtensionInstalled && !copilotDebugLoggingEnabled && copilotHasUsage)
+        ? `<button class="btn-tab" onclick="window.vscode.postMessage({command:'enableCopilotRealCacheData'})" style="background:rgba(57,255,20,0.1);color:#39FF14;border:1px solid rgba(57,255,20,0.3);border-radius:6px;padding:6px 14px;margin-top:8px;cursor:pointer;">✅ Enable Real Cache Data</button>`
+        : '';
 
       // Budget connect widget
       let budgetWidget: string;
@@ -267,7 +274,7 @@ export class PricingViewProvider {
           <td class="data-text">${fmt(cmIn)}</td><td class="data-text">${fmtCost(cmInC)}</td>
           <td class="data-text" style="color:var(--text-secondary)">${fmt(lmIn)}</td><td class="data-text" style="color:var(--text-secondary)">${fmtCost(lmInC)}</td>
         </tr>
-        <tr><td>Cached input tokens</td>
+        <tr><td>Cached input tokens${copilotMonth.cacheReadTokens > 0 && copilotMonth.cacheTokensEstimated ? ' <span style="opacity:.7;font-size:0.85em" title="Calculated estimate, not measured by GitHub Copilot">(calc.)</span>' : ''}</td>
           <td class="data-text">${fmt(copilotMonth.cacheReadTokens)}</td><td class="data-text">${fmtCost(cmCachedC)}</td>
           <td class="data-text" style="color:var(--text-secondary)">${fmt(copilotLastMonth.cacheReadTokens)}</td><td class="data-text" style="color:var(--text-secondary)">${fmtCost(lmCachedC)}</td>
         </tr>
@@ -311,9 +318,10 @@ export class PricingViewProvider {
 
         <div class="section" style="margin-bottom:24px;">
           <h2>🏷️ Usage by Model (This Month)</h2>
+          ${copilotMonth.cacheReadTokens > 0 && copilotMonth.cacheTokensEstimated ? `<p style="font-size:0.85em;color:var(--text-secondary);margin:-8px 0 14px">🧮 "Cached input" is a calculated estimate, not measured by GitHub Copilot - details below.</p>` : ''}
           <table>
             <thead><tr>
-              <th>Model</th><th>Input</th><th>Cached input</th><th>Output</th>
+              <th>Model</th><th>Input</th><th title="${copilotMonth.cacheReadTokens > 0 && copilotMonth.cacheTokensEstimated ? 'Calculated estimate, not measured by GitHub Copilot' : ''}">Cached input${copilotMonth.cacheReadTokens > 0 && copilotMonth.cacheTokensEstimated ? ' (calc.)' : ''}</th><th>Output</th>
               <th>Official $/1M in/cached/out</th>
               <th>Input USD</th><th>Cached USD</th><th>Output USD</th><th>AI Credits</th><th>Total USD</th>
             </tr></thead>
@@ -332,6 +340,27 @@ export class PricingViewProvider {
             <tbody>${summaryRows}</tbody>
           </table>
         </div>
+
+        <details class="section" style="margin-bottom:24px;" ${copilotMonth.cacheTokensEstimated ? 'open' : ''}>
+          <summary style="cursor:pointer;font-weight:600;">${copilotMonth.cacheTokensEstimated ? '🧮 How are Cache Read / Cache Write tokens calculated?' : '✅ Cache Read / Cache Write tokens are measured, not calculated'}</summary>
+          <div style="font-size:0.85em;color:var(--text-secondary);line-height:1.6;margin-top:12px;">
+            ${copilotMonth.cacheTokensEstimated ? `
+            <p><strong>Why they're not real data (for this period):</strong> by default, GitHub Copilot never writes a cache-read/cache-write breakdown to its local session files (only <code>promptTokens</code>/<code>outputTokens</code> are ever present there, no cache split) or to the Copilot CLI's session event log (its schema defines cache fields, but that specific event type is marked "ephemeral" by GitHub and is never written to disk). Turning on Copilot's own <code>github.copilot.chat.agentDebugLog.fileLogging.enabled</code> setting does write real per-call cache counts to local debug-log files, which AI Insights reads automatically when present - but this period had at least one session with no matching debug log (the setting was off, or predates enabling it), so its cache numbers had to be estimated instead.</p>
+            <p><strong>How the estimate works:</strong> since real per-turn <code>promptTokens</code> totals <em>are</em> available, we estimate the cache split by comparing consecutive turns in the same session:</p>
+            <ul style="margin:6px 0 6px 18px;padding:0;">
+              <li><strong>Cache read</strong> = the smaller of (this turn's total prompt tokens) and (the previous turn's total prompt tokens + its output tokens) - i.e. we assume the entire previous turn, including the model's own reply, gets reused from cache as this turn's context grows.</li>
+              <li><strong>Cache write</strong> = whatever's left above that (the "fresh" growth this turn). This isn't an independent guess - it follows from the cache-read assumption above, since the next turn's cache-read estimate only makes sense if this turn's new content actually got cached.</li>
+            </ul>
+            <p><strong>Where it resets to zero:</strong> if prompt tokens shrink from one turn to the next, or the model changes mid-session, that turn is treated as 100% fresh with no cache reuse assumed - a shrink or model switch usually means compaction happened or the request is unrelated to what came before, not genuine cache reuse.</p>
+            <p><strong>Confidence:</strong> the cache-read estimate is reasonably grounded in how prompt caching actually works. The cache-write split is rougher - real Copilot sessions might add a large chunk of content (e.g. one big tool result) without it actually being marked for caching, which this method can't distinguish from genuinely-cached growth.</p>
+            <p><strong>Turn it off, change how it's applied, or switch to real data:</strong> set <code>aiInsights.providers.copilot.cacheEstimation.enabled</code> to <code>false</code> to disable estimation entirely (cache tokens will show as 0). <code>aiInsights.providers.copilot.cacheEstimation.convention</code> controls whether the estimate is folded into the existing input-token total (<code>inclusive</code>, the default - keeps cost figures on this page accurate) or shown as additional tokens on top of a reduced input figure (<code>exclusive</code> - matches how Claude Code's real cache data is shown elsewhere in this extension, but can understate cost). Or enable real telemetry below - new sessions will then report measured cache numbers instead.</p>
+            ${enableRealCacheDataButton}
+            ` : `
+            <p>Every Copilot session counted this period had a matching <code>debug-logs/{sessionId}/main.jsonl</code> telemetry file, so cache-read/write numbers above are GitHub's own reported <code>cachedTokens</code> counts, not a heuristic. This requires the opt-in <code>github.copilot.chat.agentDebugLog.fileLogging.enabled</code> setting to have been on before each session started - see the Copilot provider wiki page for what that involves.</p>
+            ${(copilotChatExtensionInstalled && !copilotDebugLoggingEnabled) ? `<p style="margin-top:8px;">⚠️ That setting is <strong>currently off</strong> though - the sessions above were logged while it was still on. New Copilot sessions from now on will fall back to calculated estimates unless you turn it back on.</p>${enableRealCacheDataButton}` : ''}
+            `}
+          </div>
+        </details>
 
         <div style="border-top:1px solid var(--border);margin:8px 0 28px;"></div>
         <p style="font-size:0.8em;color:var(--text-secondary);margin-bottom:20px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;">📊 Model Pricing Reference</p>

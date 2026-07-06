@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics, DiffMetrics, DailyUsage } from '../types';
 import { ConnectedGitHubUser } from '../core/githubAuth';
 import { UsageHealthScore } from '../core/usageHealthScore';
+import { Insight } from '../core/insightsEngine';
 import { computeCacheMetrics } from '../core/budgetManager';
 import { toLocalDateKey } from '../core/dateUtils';
 import { providerIcon } from './providerIcons';
@@ -310,12 +311,12 @@ export class DashboardProvider {
     DashboardProvider.currentPanel?.webview.postMessage({ type: 'sharingError', error });
   }
 
-  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics): vscode.WebviewPanel {
+  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = []): vscode.WebviewPanel {
     const logoPath = vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png');
 
     if (DashboardProvider.currentPanel) {
       const logoUri = DashboardProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics);
+      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights);
       DashboardProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return DashboardProvider.currentPanel;
     }
@@ -331,7 +332,7 @@ export class DashboardProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics);
+    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights);
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -347,6 +348,7 @@ export class DashboardProvider {
             break;
           case 'connectGitHub': vscode.commands.executeCommand('aiInsights.connectGitHub'); break;
           case 'disconnectGitHub': vscode.commands.executeCommand('aiInsights.disconnectGitHub'); break;
+          case 'enableCopilotRealCacheData': vscode.commands.executeCommand('aiInsights.enableCopilotRealCacheData'); break;
           case 'startSharing': vscode.commands.executeCommand('aiInsights.startSharing'); break;
           case 'stopSharing': vscode.commands.executeCommand('aiInsights.stopSharing'); break;
           case 'setSessionLookbackDays': {
@@ -356,6 +358,29 @@ export class DashboardProvider {
               .update('sessionLookbackDays', days, vscode.ConfigurationTarget.Global)
               .then(() => vscode.commands.executeCommand('aiInsights.refresh'))
               .then(() => vscode.commands.executeCommand('aiInsights.showDashboard'));
+            break;
+          }
+          case 'dismissInsight':
+            vscode.commands.executeCommand('aiInsights.dismissInsight', message.id);
+            break;
+          case 'snoozeInsight':
+            vscode.commands.executeCommand('aiInsights.snoozeInsight', message.id);
+            break;
+          case 'exportHealthScorePng': {
+            const match = /^data:image\/png;base64,(.+)$/.exec(String(message.dataUrl || ''));
+            if (!match) { break; }
+            const buffer = Buffer.from(match[1], 'base64');
+            const ts = new Date().toISOString().slice(0, 10);
+            vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(`ai-insights-health-score-${ts}.png`),
+              filters: { 'PNG Image': ['png'] },
+              title: 'Save Health Score as PNG',
+            }).then(uri => {
+              if (!uri) { return; }
+              return vscode.workspace.fs.writeFile(uri, buffer).then(() => {
+                vscode.window.showInformationMessage('Health score image saved.');
+              });
+            });
             break;
           }
         }
@@ -401,7 +426,7 @@ export class DashboardProvider {
     }
   }
 
-  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics): string {
+  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = []): string {
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' :
       n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : n.toString();
     const fmtCost = (n: number) => '$' + n.toFixed(4);
@@ -460,9 +485,17 @@ export class DashboardProvider {
     // ── Copilot cache efficiency widget (Copilot-only, not the all-provider m.cache) ──
     const ch = computeCacheMetrics(m.currentMonthByProvider.copilot);
     const cacheHitColor = ch.cacheHitRate >= 0.3 ? '#39FF14' : ch.cacheHitRate >= 0.1 ? '#f9e2af' : 'var(--text-secondary)';
+    const copilotCacheHasData = ch.totalCacheReadTokens > 0 || ch.totalCacheWriteTokens > 0;
+    const copilotCacheIsEstimated = m.currentMonthByProvider.copilot.cacheTokensEstimated;
+    const copilotChatExtensionInstalled = !!vscode.extensions.getExtension('github.copilot-chat');
+    const copilotDebugLoggingEnabled = vscode.workspace.getConfiguration('github.copilot.chat').get<boolean>('agentDebugLog.fileLogging.enabled', false);
+    const copilotHasUsage = copilotMonth.totalTokens > 0 || copilotLastMonth.totalTokens > 0;
+    const enableRealCacheDataButton = (copilotChatExtensionInstalled && !copilotDebugLoggingEnabled && copilotHasUsage)
+      ? `<button class="btn-tab" onclick="window.vscode.postMessage({command:'enableCopilotRealCacheData'})" style="background:rgba(57,255,20,0.1);color:#39FF14;border:1px solid rgba(57,255,20,0.3);border-radius:6px;padding:6px 14px;margin-top:8px;cursor:pointer;">✅ Enable Real Cache Data</button>`
+      : '';
     const copilotCacheSection = `
     <div id="section-copilot-cache" class="section" style="display:none;">
-      <h2>⚡ GitHub Copilot Cache Efficiency</h2>
+      <h2>⚡ GitHub Copilot Cache Efficiency ${copilotCacheHasData ? (copilotCacheIsEstimated ? '<span style="font-size:0.55em;font-weight:normal;color:var(--text-secondary);vertical-align:middle;">(calculated, not measured)</span>' : '<span style="font-size:0.55em;font-weight:normal;color:var(--text-secondary);vertical-align:middle;">(measured via Copilot telemetry)</span>') : ''}</h2>
       <p style="font-size:0.85em;color:var(--text-secondary);margin:-12px 0 18px">Copilot cached input is priced separately from fresh input in GitHub's model pricing table</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px;">
         <div class="mini-card"><div class="mini-label">Cache Hit Rate</div><div class="mini-val data-text" style="color:${cacheHitColor}">${Math.round(ch.cacheHitRate * 100)}%</div></div>
@@ -471,7 +504,20 @@ export class DashboardProvider {
         <div class="mini-card"><div class="mini-label">Cache Write Tokens</div><div class="mini-val data-text">${fmt(ch.totalCacheWriteTokens)}</div></div>
         <div class="mini-card"><div class="mini-label">Read/Write Ratio</div><div class="mini-val data-text">${ch.cacheWriteReadRatio.toFixed(1)}×</div></div>
       </div>
-      ${ch.cacheHitRate < 0.1 && ch.totalCacheWriteTokens === 0 ? `<p style="font-size:0.85em;color:var(--text-secondary);">ℹ️ No cache data detected. GitHub Copilot's local session logs don't currently expose a separate cache-read/cache-write token count (community-reported: Copilot's own usage events report these as 0 regardless of the underlying model), so cache efficiency can't be measured for Copilot sessions today - see the disclaimer at the bottom of the dashboard.</p>` : ''}
+      ${copilotCacheHasData
+      ? (copilotCacheIsEstimated
+        ? `<details style="font-size:0.85em;color:var(--text-secondary);">
+          <summary style="cursor:pointer;"><strong>🧮 Calculated, not measured</strong> - why, and how these numbers are estimated</summary>
+          <div style="line-height:1.6;margin-top:10px;">
+            <p><strong>Why they're not real data:</strong> by default, GitHub Copilot never exposes real cache-read/cache-write token counts on any local channel we could find - not the VS Code chat session files on disk, not the Copilot CLI's session event log (its schema defines cache fields, but that event type is marked "ephemeral" by GitHub and never written to disk). Turning on Copilot's own <code>github.copilot.chat.agentDebugLog.fileLogging.enabled</code> setting does write real per-call cache counts to local debug-log files, which AI Insights reads automatically when present - but at least one session this month had no matching debug log (the setting was off, or it predates enabling it), so its cache numbers had to be estimated instead.</p>
+            <p><strong>How the estimate works:</strong> using the real per-turn prompt-token totals Copilot does report, we diff consecutive turns in the same session. Cache read = the smaller of (this turn's total prompt tokens) and (the previous turn's total + its output tokens) - i.e. we assume the entire previous turn gets reused from cache. Cache write = whatever's left above that (the fresh growth this turn) - this follows from the cache-read assumption itself, since the next turn's estimate only makes sense if this turn's new content actually got cached. A turn resets to 0% cached if prompt tokens shrink or the model changes, since that usually means compaction or an unrelated request, not cache reuse.</p>
+            <p>Treat the cache-read % as directional, and the read/write split as lower-confidence than the total. Disable via <code>aiInsights.providers.copilot.cacheEstimation.enabled</code>, or change how it affects cost via <code>aiInsights.providers.copilot.cacheEstimation.convention</code> - or enable real telemetry below, which switches new sessions from calculated to measured cache numbers. See the Copilot provider wiki page for full detail.</p>
+            ${enableRealCacheDataButton}
+          </div>
+        </details>`
+        : `<p style="font-size:0.85em;color:var(--text-secondary);">✅ Real cache/token counts read from GitHub Copilot's own debug-log telemetry (<code>github.copilot.chat.agentDebugLog.fileLogging.enabled</code>) for every session this month - not estimated.</p>
+          ${(copilotChatExtensionInstalled && !copilotDebugLoggingEnabled) ? `<p style="font-size:0.85em;color:var(--text-secondary);margin-top:8px;">⚠️ That setting is <strong>currently off</strong> though - the sessions above were logged while it was still on. New Copilot sessions from now on will fall back to calculated estimates unless you turn it back on.</p>${enableRealCacheDataButton}` : ''}`)
+      : `<p style="font-size:0.85em;color:var(--text-secondary);">ℹ️ No cache data available. Either cache estimation is disabled (<code>aiInsights.providers.copilot.cacheEstimation.enabled</code>), or no sessions this month had the consecutive real-token-count turns needed to estimate from.</p>${enableRealCacheDataButton}`}
     </div>`;
 
     // ── Cache efficiency card ──────────────────────────────────────────────
@@ -729,6 +775,12 @@ export class DashboardProvider {
         return { id, costPer1K, totalCost: p?.estimatedCost ?? 0, outputTokens: p?.outputTokens ?? 0 };
       });
     const providerCostDataJson = JSON.stringify(providerCostData);
+    const healthScoreExportDataJson = JSON.stringify(healthScore ? {
+      grade: healthScore.grade,
+      gradeColor: healthScore.gradeColor,
+      overall: healthScore.overall,
+      components: healthScore.components.map(c => ({ label: c.label, points: c.points, maxPoints: c.maxPoints })),
+    } : null);
 
     // ── Anomaly badge HTML (pre-rendered server-side) ──────────────────────────
     const anomaly = m.anomaly;
@@ -1072,11 +1124,28 @@ export class DashboardProvider {
             <div style="background:${barColor};width:${barPct}%;height:100%;"></div>
           </div>
         </td>
-        <td style="font-size:0.78em;color:var(--text-secondary);">${c.detail}</td>
+        <td style="font-size:0.78em;color:var(--text-secondary);">
+          <details>
+            <summary style="cursor:pointer;">${c.detail}</summary>
+            <div style="margin-top:4px;color:var(--text-secondary);opacity:0.85;">${c.rule}</div>
+          </details>
+        </td>
       </tr>`;
     }).join('');
-    const recItems = hs.topRecommendations.map(r => `<li style="margin-bottom:5px;">${r}</li>`).join('');
+    const insightIcon: Record<string, string> = { tip: '💡', opportunity: '🎯', celebration: '🎉' };
+    const insightItems = insights.map(ins => `<li data-insight-id="${ins.id}" style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="flex:1;min-width:200px;">${insightIcon[ins.type] || '💡'} ${ins.message}${ins.id === 'copilot-real-cache-data-available' ? `<br>${enableRealCacheDataButton}` : ''}</span>
+        ${ins.type !== 'celebration' ? `<span style="white-space:nowrap;">
+          <button class="insight-snooze-btn" data-insight-id="${ins.id}" title="Snooze for a week" style="background:transparent;border:none;color:var(--text-secondary);cursor:pointer;font-size:0.95em;">💤</button>
+          <button class="insight-dismiss-btn" data-insight-id="${ins.id}" title="Dismiss" style="background:transparent;border:none;color:var(--text-secondary);cursor:pointer;font-size:0.95em;">✕</button>
+        </span>` : ''}
+      </li>`).join('');
     return `<div class="section" style="border-top:3px solid ${hs.gradeColor};margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:-8px;">
+        <button id="btnSaveHealthPng" style="background:transparent;border:1px solid var(--border);color:var(--text-primary);border-radius:4px;cursor:pointer;font-size:0.78em;padding:5px 10px;">📷 Save PNG</button>
+        <button id="btnCopyHealthPng" style="background:transparent;border:1px solid var(--border);color:var(--text-primary);border-radius:4px;cursor:pointer;font-size:0.78em;padding:5px 10px;">📋 Copy Image</button>
+        <span id="healthPngStatus" style="font-size:0.78em;color:var(--text-secondary);align-self:center;"></span>
+      </div>
       <div style="display:flex;align-items:center;gap:20px;margin-bottom:16px;">
         <div style="text-align:center;min-width:64px;">
           <div style="font-size:3em;font-weight:800;line-height:1;color:${hs.gradeColor};">${hs.grade}</div>
@@ -1094,9 +1163,9 @@ export class DashboardProvider {
           <table style="width:100%;">${compRows}</table>
         </div>
       </div>
-      ${recItems ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;">
-        <div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary);font-weight:600;margin-bottom:8px;">Recommendations</div>
-        <ul style="list-style:none;padding:0;margin:0;font-size:0.85em;color:var(--text-secondary);">${recItems}</ul>
+      ${insightItems ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;">
+        <div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary);font-weight:600;margin-bottom:8px;">Insights</div>
+        <ul id="insightsList" style="list-style:none;padding:0;margin:0;font-size:0.85em;color:var(--text-secondary);">${insightItems}</ul>
       </div>` : ''}
     </div>`;
   })() : ''}
@@ -1230,6 +1299,18 @@ export class DashboardProvider {
     </div>
   </div>
 
+  <!-- ── Session Hygiene: compaction accounting & marathon sessions ── -->
+  <div class="section" id="section-hygiene">
+    <h2>🧹 Session Hygiene</h2>
+    <p style="font-size:0.82em;color:var(--text-secondary);margin:-14px 0 16px">Context compaction accounting and marathon (very long) sessions this period</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;">
+      <div class="mini-card"><div class="mini-label">Manual Compactions</div><div class="mini-val data-text">${m.sessionHygiene.manualCompactions}</div></div>
+      <div class="mini-card"><div class="mini-label">Auto Compactions</div><div class="mini-val data-text">${m.sessionHygiene.autoCompactions}</div></div>
+      <div class="mini-card"><div class="mini-label">Tokens Reclaimed</div><div class="mini-val data-text">${fmt(m.sessionHygiene.tokensReclaimed)}</div></div>
+      <div class="mini-card"><div class="mini-label">Marathon Sessions ${tip('Sessions flagged as very long: over 80 turns or running for more than 3 hours.')}</div><div class="mini-val data-text" style="color:${m.sessionHygiene.marathonSessions > 0 ? '#f9e2af' : 'var(--text-primary)'};">${m.sessionHygiene.marathonSessions}</div>${m.sessionHygiene.longestMarathonMinutes > 0 ? `<div style="font-size:0.75em;color:var(--text-secondary);">longest ${Math.round(m.sessionHygiene.longestMarathonMinutes / 60 * 10) / 10}h</div>` : ''}</div>
+    </div>
+  </div>
+
   <!-- ── Copilot: Suggestion Acceptance Rate ────────────────────── -->
   <div id="section-copilot-acceptance" class="section" style="display:none;">
     <h2>🎯 Suggestion Acceptance Rate <span style="font-size:0.7em;font-weight:400;color:var(--text-secondary);">live · resets on reload</span></h2>
@@ -1346,7 +1427,7 @@ export class DashboardProvider {
       <li>Using the <strong>same subscription on another computer</strong>? That machine's sessions aren't scanned here - totals only reflect activity on this one.</li>
       <li><strong>Deleting or clearing session history</strong> (chat history, workspace storage, <code>~/.claude</code>, <code>~/.codex</code>, etc.) removes that usage from these calculations after the fact.</li>
       <li>Providers inject a <strong>system prompt</strong> and tool/agent instructions server-side that local session logs don't always capture, so real input/context size can run higher than what's shown here. Where this applies, the extension exposes a default multiplier - see <code>aiInsights.providers.copilot.inputTokenMultiplier</code> - so you can approximate the missing overhead.</li>
-      <li><strong>GitHub Copilot cache usage isn't tracked.</strong> GitHub's own billing meters cached prompt tokens separately (and cheaper), but Copilot's local session logs don't expose a cache-read/cache-write breakdown to read - it's either folded into the total input count or reported as 0, regardless of the underlying model. Cache Hit Rate / Cache Savings will read 0 for Copilot even if your real bill includes a cache discount; cache numbers for other providers (e.g. Claude Code) are unaffected.</li>
+      <li><strong>GitHub Copilot cache numbers are calculated, not measured, unless you enable one Copilot setting.</strong> Copilot's local session logs don't include a cache-read/cache-write breakdown by default, so Cache Hit Rate / Cache Savings are estimated from turn-over-turn context growth and flagged "(calc.)" wherever shown. Turning on Copilot's own <code>github.copilot.chat.agentDebugLog.fileLogging.enabled</code> setting makes it write real per-call cache counts locally, which AI Insights then reads automatically instead of estimating - see the Cache Efficiency widget below (or the "Enable Real Cache Data" button there) to turn this on. Cache numbers for other providers with real per-request cache counts by default (e.g. Claude Code) are unaffected.</li>
     </ul>
     <p style="font-size:0.82em;color:var(--text-secondary);line-height:1.7;">
       Treat these figures as a <strong>local, best-effort estimate</strong> for spotting trends over time - not an exact reconciliation of your invoice.
@@ -1371,6 +1452,7 @@ export class DashboardProvider {
     var allPeriodProviderData = ${allPeriodProviderDataJson};
     var allPeriodMcpData = ${allPeriodMcpDataJson};
     var providerCostData = ${providerCostDataJson};
+    var healthScoreExportData = ${healthScoreExportDataJson};
     var _currentPeriod = 'currentMonth';
     var _currentProv = 'overall';
 
@@ -1378,6 +1460,89 @@ export class DashboardProvider {
     (function() {
       var el = document.getElementById('anomalyBadges');
       if (el) { el.innerHTML = ${JSON.stringify(anomalyBadgesHtml)}; }
+    })();
+
+    // ── Insights: dismiss / snooze ──────────────────────────────────────────────
+    (function() {
+      var list = document.getElementById('insightsList');
+      if (!list) { return; }
+      list.addEventListener('click', function(e) {
+        var target = e.target.closest('.insight-dismiss-btn, .insight-snooze-btn');
+        if (!target) { return; }
+        var id = target.getAttribute('data-insight-id');
+        var command = target.classList.contains('insight-dismiss-btn') ? 'dismissInsight' : 'snoozeInsight';
+        window.vscode.postMessage({ command: command, id: id });
+        var li = target.closest('li');
+        if (li) { li.style.opacity = '0.3'; li.style.pointerEvents = 'none'; }
+      });
+    })();
+
+    // ── Health score PNG export / clipboard copy ───────────────────────────────
+    (function() {
+      if (!healthScoreExportData) { return; }
+      function drawHealthScoreCanvas() {
+        var data = healthScoreExportData;
+        var w = 640, rowH = 34, headerH = 110;
+        var h = headerH + data.components.length * rowH + 30;
+        var canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0f1218'; ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = data.gradeColor;
+        ctx.font = '700 48px sans-serif';
+        ctx.fillText(data.grade, 24, 70);
+        ctx.fillStyle = '#e5e2e1';
+        ctx.font = '600 22px sans-serif';
+        ctx.fillText('Usage Health Score: ' + data.overall + '/100', 100, 50);
+        ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        ctx.fillRect(100, 66, 400, 10);
+        ctx.fillStyle = data.gradeColor;
+        ctx.fillRect(100, 66, 400 * (data.overall / 100), 10);
+        var y = headerH;
+        data.components.forEach(function(c) {
+          var pct = c.maxPoints > 0 ? c.points / c.maxPoints : 0;
+          ctx.fillStyle = '#e5e2e1';
+          ctx.font = '14px sans-serif';
+          ctx.fillText(c.label, 24, y + 14);
+          ctx.fillStyle = 'rgba(255,255,255,0.08)';
+          ctx.fillRect(300, y, 220, 8);
+          ctx.fillStyle = pct >= 0.8 ? '#39FF14' : pct >= 0.5 ? '#f9e2af' : '#f38ba8';
+          ctx.fillRect(300, y, 220 * pct, 8);
+          ctx.fillStyle = '#9a9691';
+          ctx.font = '12px sans-serif';
+          ctx.fillText(c.points + '/' + c.maxPoints, 530, y + 10);
+          y += rowH;
+        });
+        return canvas;
+      }
+      var status = document.getElementById('healthPngStatus');
+      function setStatus(msg) {
+        if (!status) { return; }
+        status.textContent = msg;
+        setTimeout(function() { status.textContent = ''; }, 3000);
+      }
+      var saveBtn = document.getElementById('btnSaveHealthPng');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', function() {
+          var canvas = drawHealthScoreCanvas();
+          window.vscode.postMessage({ command: 'exportHealthScorePng', dataUrl: canvas.toDataURL('image/png') });
+        });
+      }
+      var copyBtn = document.getElementById('btnCopyHealthPng');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', function() {
+          var canvas = drawHealthScoreCanvas();
+          canvas.toBlob(function(blob) {
+            if (!blob || !navigator.clipboard || !window.ClipboardItem) {
+              setStatus('Copy not supported in this VS Code version');
+              return;
+            }
+            navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+              .then(function() { setStatus('Copied!'); })
+              .catch(function() { setStatus('Copy failed'); });
+          }, 'image/png');
+        });
+      }
     })();
 
     // ── Provider cost per 1K output table ────────────────────────────────────

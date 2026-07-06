@@ -8,6 +8,7 @@ import * as os from 'os';
 import { BaseProvider } from './base';
 import { Session, Interaction } from '../types';
 import { calculateCost } from '../core/costEstimation';
+import { extractContextRefs } from '../core/contextReferences';
 
 type TokenUsage = {
   input_tokens?: number;
@@ -22,23 +23,25 @@ export class CodexProvider extends BaseProvider {
   readonly displayName = 'Codex';
   private readonly sessionsDir: string;
   private readonly indexFile: string;
+  private readonly extraDirs: string[];
 
-  constructor() {
+  constructor(additionalPaths: string[] = []) {
     super();
     const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
     this.sessionsDir = path.join(codexHome, 'sessions');
     this.indexFile = path.join(codexHome, 'session_index.jsonl');
+    this.extraDirs = additionalPaths.map(p => this.expandHome(p));
   }
 
-  getSessionDirectories(): string[] { return [this.sessionsDir, this.indexFile]; }
+  getSessionDirectories(): string[] { return [this.sessionsDir, this.indexFile, ...this.extraDirs]; }
 
   async discoverSessionFiles(): Promise<string[]> {
     const files: string[] = [];
-    try {
-      if (fs.existsSync(this.sessionsDir)) {
-        this.walkDir(this.sessionsDir, files);
-      }
-    } catch { /* skip */ }
+    for (const dir of [this.sessionsDir, ...this.extraDirs]) {
+      try {
+        if (fs.existsSync(dir)) { this.walkDir(dir, files); }
+      } catch { /* skip */ }
+    }
     return files;
   }
 
@@ -73,6 +76,7 @@ export class CodexProvider extends BaseProvider {
       let pendingToolCalls: string[] = [];
       let pendingCommandRuns: string[] = [];
       let pendingFileAccesses: Array<{ tool: string; path: string }> = [];
+      let pendingUserTexts: string[] = [];
 
       for (const line of lines) {
         try {
@@ -93,12 +97,15 @@ export class CodexProvider extends BaseProvider {
           // Capture title from the dedicated user_message event only.
           // response_item entries with role='user' contain injected context
           // (environment_context, permissions) and must not be used as the title.
-          if (!title && entry.type === 'event_msg' && entry.payload?.type === 'user_message' && entry.payload?.message) {
+          if (entry.type === 'event_msg' && entry.payload?.type === 'user_message' && entry.payload?.message) {
             let msg = String(entry.payload.message);
             // VS Code extension injects IDE context before the real request; extract it when present
             const requestMatch = msg.match(/##\s*My request for Codex:\s*\n([\s\S]+)/i);
             if (requestMatch) { msg = requestMatch[1]; }
-            title = msg.trim().slice(0, 80).replace(/[\n\r]+/g, ' ');
+            pendingUserTexts.push(msg);
+            if (!title) {
+              title = msg.trim().slice(0, 80).replace(/[\n\r]+/g, ' ');
+            }
           }
 
           const payloadType = entry.payload?.type;
@@ -151,10 +158,12 @@ export class CodexProvider extends BaseProvider {
             toolCalls: pendingToolCalls,
             commandRuns: pendingCommandRuns.length > 0 ? pendingCommandRuns : undefined,
             fileAccesses: pendingFileAccesses.length > 0 ? pendingFileAccesses : undefined,
+            contextRefs: extractContextRefs(pendingUserTexts.join('\n')),
           });
           pendingToolCalls = [];
           pendingCommandRuns = [];
           pendingFileAccesses = [];
+          pendingUserTexts = [];
         } catch { /* skip malformed lines */ }
       }
 

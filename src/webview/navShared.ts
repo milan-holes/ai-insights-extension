@@ -9,6 +9,7 @@ export type NavTab =
   | 'promptHistory'
   | 'tokenCalculator'
   | 'benchmark'
+  | 'abTest'
   | 'claudeAccount'
   | 'repoAnalysis'
   | 'aiStructure'
@@ -26,9 +27,10 @@ const NAV_TABS: TabDef[] = [
   { id: 'pricing', label: 'Copilot', cmd: 'showPricing', loadLabel: 'Loading GitHub Copilot…' },
   { id: 'tokenCalculator', label: 'Calculator', cmd: 'showTokenCalculator', loadLabel: 'Loading token calculator…' },
   { id: 'claudeAccount', label: 'Claude', cmd: 'showClaudeAccount', loadLabel: 'Loading Claude…' },
-  { id: 'diagnostics', label: 'Diagnostics', cmd: 'showDiagnostics', loadLabel: 'Loading diagnostics…' },
+  { id: 'abTest', label: 'A/B Test', cmd: 'showAbTest', loadLabel: 'Loading A/B test…' },
   // { id: 'benchmark', label: 'Benchmark', cmd: 'showBenchmark', loadLabel: 'Loading benchmark…' },
   // { id: 'repoAnalysis', label: 'Repo Graph', cmd: 'showRepoAnalysis', loadLabel: 'Loading repo analysis…' },
+  { id: 'diagnostics', label: 'Settings', cmd: 'showDiagnostics', loadLabel: 'Loading settings…' },
 ];
 
 const RIGHT_NAV_TABS = new Set<NavTab>(['pricing', 'claudeAccount']);
@@ -187,6 +189,7 @@ export const NAV_COMMANDS: Record<string, string> = {
   showPromptHistory: 'aiInsights.showPromptHistory',
   showTokenCalculator: 'aiInsights.showTokenCalculator',
   showBenchmark: 'aiInsights.showBenchmark',
+  showAbTest: 'aiInsights.showAbTest',
   showClaudeAccount: 'aiInsights.showClaudeAccount',
   showRepoAnalysis: 'aiInsights.showRepoAnalysis',
   showAIStructure: 'aiInsights.showAIStructure',

@@ -28,6 +28,7 @@ interface CompareSessionData {
   uniqueFilesRead: number;
   uniqueFilesEdited: number;
   cacheHitRate: number;
+  cacheTokensEstimated: boolean;
   outputInputRatio: number;
   costPerInteraction: number;
   tokensPerInteraction: number;
@@ -115,6 +116,7 @@ function prepareData(session: Session): CompareSessionData {
     uniqueFilesRead: fileReadsSet.size,
     uniqueFilesEdited: fileEditsSet.size,
     cacheHitRate,
+    cacheTokensEstimated: !!session.cacheTokensEstimated,
     outputInputRatio: session.totalInputTokens > 0 ? (session.totalOutputTokens || 0) / session.totalInputTokens : 0,
     costPerInteraction: interactions > 0 ? (session.estimatedCostUsd || 0) / interactions : 0,
     tokensPerInteraction: interactions > 0 ? (session.totalTokens || 0) / interactions : 0,
@@ -438,7 +440,8 @@ function bestIdx(arr,wantMax){
     rows+='<tr><td class="row-label">'+esc(f.label)+'</td>';
     vals.forEach(function(v,i){
       var isBest=f.wantMax!=null&&i===bi;
-      rows+='<td class="num'+(isBest?' row-best':'')+'">'+esc(f.fmt(v))+(isBest?'<span class="win-badge">&#9733;</span>':'')+'</td>';
+      var isCalc=f.key==='cacheHitRate'&&S[i].provider==='copilot'&&S[i].cacheTokensEstimated;
+      rows+='<td class="num'+(isBest?' row-best':'')+'" title="'+(isCalc?'Calculated estimate, not measured by GitHub Copilot':'')+'">'+esc(f.fmt(v))+(isCalc?' <span style="opacity:.7">(calc.)</span>':'')+(isBest?'<span class="win-badge">&#9733;</span>':'')+'</td>';
     });
     rows+='</tr>';
   });

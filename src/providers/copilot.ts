@@ -17,6 +17,7 @@ import * as os from 'os';
 import { BaseProvider } from './base';
 import { Session, Interaction } from '../types';
 import { calculateCost } from '../core/costEstimation';
+import { extractContextRefs } from '../core/contextReferences';
 
 const COPILOT_EXTENSION_FOLDERS = [
   'GitHub.copilot-chat',
@@ -39,20 +40,31 @@ const NON_SESSION_PATTERNS = [
 
 const UNSAFE_PATH_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+export type CopilotCacheConvention = 'inclusive' | 'exclusive';
+
 export class CopilotProvider extends BaseProvider {
   readonly id = 'copilot' as const;
   readonly displayName = 'GitHub Copilot';
 
   private readonly sessionDirs: string[];
   private readonly inputTokenMultiplier: number;
+  private readonly cacheEstimationEnabled: boolean;
+  private readonly cacheEstimationConvention: CopilotCacheConvention;
 
-  constructor(inputTokenMultiplier = 1.0) {
+  constructor(
+    inputTokenMultiplier = 1.0,
+    cacheEstimationEnabled = true,
+    cacheEstimationConvention: CopilotCacheConvention = 'inclusive',
+    additionalPaths: string[] = [],
+  ) {
     super();
     this.inputTokenMultiplier = Math.max(0.1, inputTokenMultiplier);
-    this.sessionDirs = this.buildSessionPaths();
+    this.cacheEstimationEnabled = cacheEstimationEnabled;
+    this.cacheEstimationConvention = cacheEstimationConvention;
+    this.sessionDirs = this.buildSessionPaths(additionalPaths.map(p => this.expandHome(p)));
   }
 
-  private buildSessionPaths(): string[] {
+  private buildSessionPaths(additionalPaths: string[]): string[] {
     const home = os.homedir();
     const dirs = new Set<string>();
 
@@ -104,6 +116,8 @@ export class CopilotProvider extends BaseProvider {
 
     dirs.add(path.join(home, '.copilot', 'session-state'));
 
+    for (const p of additionalPaths) { dirs.add(p); }
+
     return [...dirs];
   }
 
@@ -153,6 +167,7 @@ export class CopilotProvider extends BaseProvider {
               path.join(workspaceRoot, 'chatSessions'),
               ...COPILOT_EXTENSION_FOLDERS.flatMap(folder => [
                 path.join(workspaceRoot, folder, 'chatSessions'),
+                path.join(workspaceRoot, folder, 'transcripts'),
                 path.join(workspaceRoot, folder, 'debug-logs'),
               ]),
             ];
@@ -187,6 +202,9 @@ export class CopilotProvider extends BaseProvider {
         if (this.isCopilotCliSessionPath(filePath)) {
           return this.parseCopilotCliSession(filePath, content);
         }
+        if (this.isCopilotChatTranscriptPath(filePath)) {
+          return this.parseCopilotChatTranscriptSession(filePath, content);
+        }
         return this.parseJsonlSession(filePath, content);
       } else {
         return this.parseJsonSession(filePath, content);
@@ -202,6 +220,7 @@ export class CopilotProvider extends BaseProvider {
 
       // Copilot chat sessions have a specific structure
       const interactions: Interaction[] = [];
+      const hasRealPromptTokens: boolean[] = [];
       const fallbackTimestamp = this.getFileFallbackDate(filePath);
       let startTime = fallbackTimestamp;
       let endTime = fallbackTimestamp;
@@ -275,10 +294,15 @@ export class CopilotProvider extends BaseProvider {
           mode: this.getModeFromRequest(req),
           toolCalls,
           promptPreview: inputText ? inputText.trim().substring(0, 200) : undefined,
+          contextRefs: extractContextRefs(inputText),
         });
+        hasRealPromptTokens.push(rawInputTokens > 0);
       }
 
       if (interactions.length === 0) { return null; }
+
+      const hasRealCacheData = this.attachRealCacheData(filePath, interactions, hasRealPromptTokens);
+      this.applyCacheHeuristic(interactions, hasRealPromptTokens, hasRealCacheData);
 
       const totalTokens = interactions.reduce((sum, i) => sum + i.totalTokens, 0);
       const totalInputTokens = interactions.reduce((s, i) => s + i.inputTokens, 0);
@@ -314,6 +338,7 @@ export class CopilotProvider extends BaseProvider {
         sourceFile: filePath,
         title,
         estimatedCostUsd,
+        cacheTokensEstimated: interactions.some(i => i.cacheTokensEstimated),
       };
     } catch {
       return null;
@@ -330,6 +355,7 @@ export class CopilotProvider extends BaseProvider {
       }
 
       const interactions: Interaction[] = [];
+      const hasRealPromptTokens: boolean[] = [];
       let startTime: Date | null = null;
       const fallbackTimestamp = this.getFileFallbackDate(filePath);
       let endTime = fallbackTimestamp;
@@ -382,13 +408,18 @@ export class CopilotProvider extends BaseProvider {
             mode: entry.mode || 'chat',
             toolCalls: [],
             promptPreview: promptText ? promptText.substring(0, 200) : undefined,
+            contextRefs: extractContextRefs(promptText),
           });
+          hasRealPromptTokens.push(rawInputTokens > 0);
         } catch {
           // Skip malformed lines
         }
       }
 
       if (interactions.length === 0) { return null; }
+
+      const hasRealCacheData = this.attachRealCacheData(filePath, interactions, hasRealPromptTokens);
+      this.applyCacheHeuristic(interactions, hasRealPromptTokens, hasRealCacheData);
 
       const totalInputTokens = interactions.reduce((s, i) => s + i.inputTokens, 0);
       const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
@@ -413,6 +444,7 @@ export class CopilotProvider extends BaseProvider {
         workspace: this.extractWorkspace(filePath),
         sourceFile: filePath,
         estimatedCostUsd,
+        cacheTokensEstimated: interactions.some(i => i.cacheTokensEstimated),
       };
     } catch {
       return null;
@@ -461,6 +493,7 @@ export class CopilotProvider extends BaseProvider {
     if (requests.length === 0) { return null; }
 
     const interactions: Interaction[] = [];
+    const hasRealPromptTokens: boolean[] = [];
     let startTime = fallbackTimestamp;
     let endTime = fallbackTimestamp;
 
@@ -503,14 +536,21 @@ export class CopilotProvider extends BaseProvider {
         mode: this.getModeFromRequest(request),
         toolCalls: this.extractToolCalls(request),
         promptPreview: inputText ? inputText.trim().substring(0, 200) : undefined,
+        contextRefs: extractContextRefs(inputText),
       });
+      hasRealPromptTokens.push(rawInputTokens > 0);
     }
 
     if (interactions.length === 0) { return null; }
+
+    const hasRealCacheData = this.attachRealCacheData(filePath, interactions, hasRealPromptTokens);
+    this.applyCacheHeuristic(interactions, hasRealPromptTokens, hasRealCacheData);
+
     const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
 
     const session = this.buildSession(filePath, path.basename(filePath, '.jsonl'), startTime, endTime, interactions);
     session.estimatedCostUsd = estimatedCostUsd;
+    session.cacheTokensEstimated = interactions.some(i => i.cacheTokensEstimated);
     session.title = (state as any).title;
     if (!session.title && requests[0]) {
       const firstInput = this.extractInputText(requests[0]);
@@ -602,6 +642,276 @@ export class CopilotProvider extends BaseProvider {
     return session;
   }
 
+  /**
+   * Parses Copilot Chat's newer typed-event transcript format (`transcripts/{sessionId}.jsonl`,
+   * confirmed present since at least Copilot Chat v0.46.0 / VS Code 1.118.0 - see
+   * wiki/providers/copilot.md for the version-evidence table; true origin version unknown).
+   * This format replaced the flat `requests` JSON blob and carries no
+   * token/usage data of its own - only conversation content (`session.start`, `user.message`,
+   * `assistant.turn_start/end`, `assistant.message`, `tool.execution_start/complete`). Real token
+   * and cache counts, when available, come from the sibling `debug-logs/{sessionId}/main.jsonl`
+   * telemetry file via `attachRealCacheData`; otherwise interactions fall back to text-length
+   * estimates like the other formats.
+   *
+   * One interaction is emitted per user turn (from a `user.message` up to, but not including,
+   * the next one), aggregating every assistant message and tool call in between - this mirrors
+   * how the JSON `requests` format treats one API round-trip (including its internal tool-call
+   * rounds) as a single interaction.
+   */
+  private parseCopilotChatTranscriptSession(filePath: string, content: string): Session | null {
+    const fallbackTimestamp = this.getFileFallbackDate(filePath);
+    const lines = content.trim().split('\n').filter(l => l.trim());
+    if (lines.length === 0) { return null; }
+
+    let sessionId = path.basename(filePath, '.jsonl');
+    const interactions: Interaction[] = [];
+    const hasRealPromptTokens: boolean[] = [];
+    let startTime: Date | null = null;
+    let endTime = fallbackTimestamp;
+    let firstUserMessage: string | undefined;
+
+    let pendingUserText = '';
+    let pendingUserTimestamp: Date | null = null;
+    let outputParts: string[] = [];
+    let thinkingParts: string[] = [];
+    let toolCalls = new Set<string>();
+    let hasContent = false;
+    let lastTimestamp = fallbackTimestamp;
+
+    const flush = () => {
+      if (!pendingUserTimestamp && !hasContent) { return; }
+      const timestamp = pendingUserTimestamp ?? lastTimestamp;
+      if (!startTime) { startTime = timestamp; }
+      const outputText = outputParts.join('\n');
+      const inputTokens = this.estimateTokens(pendingUserText);
+      const outputTokens = this.estimateTokens(outputText);
+      const thinkingTokens = this.estimateTokens(thinkingParts.join('\n'));
+      interactions.push({
+        timestamp,
+        model: 'gpt-5-mini',
+        inputTokens,
+        outputTokens,
+        thinkingTokens,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: inputTokens + outputTokens + thinkingTokens,
+        effectiveContextTokens: inputTokens,
+        mode: 'agent',
+        toolCalls: [...toolCalls],
+        promptPreview: pendingUserText ? pendingUserText.trim().substring(0, 200) : undefined,
+        contextRefs: extractContextRefs(pendingUserText),
+      });
+      hasRealPromptTokens.push(false);
+      pendingUserText = '';
+      pendingUserTimestamp = null;
+      outputParts = [];
+      thinkingParts = [];
+      toolCalls = new Set<string>();
+      hasContent = false;
+    };
+
+    for (const line of lines) {
+      let event: any;
+      try { event = JSON.parse(line); } catch { continue; }
+      const timestamp = this.parseTimestamp(event?.timestamp, fallbackTimestamp);
+
+      switch (event?.type) {
+        case 'session.start':
+          if (typeof event.data?.sessionId === 'string' && event.data.sessionId) {
+            sessionId = event.data.sessionId;
+          }
+          break;
+        case 'user.message':
+          flush();
+          pendingUserText = typeof event.data?.content === 'string' ? event.data.content : '';
+          pendingUserTimestamp = timestamp;
+          if (!firstUserMessage && pendingUserText) { firstUserMessage = pendingUserText; }
+          hasContent = true;
+          break;
+        case 'assistant.message':
+          if (typeof event.data?.content === 'string' && event.data.content) { outputParts.push(event.data.content); }
+          if (typeof event.data?.reasoningText === 'string' && event.data.reasoningText) { thinkingParts.push(event.data.reasoningText); }
+          if (Array.isArray(event.data?.toolRequests)) {
+            for (const tr of event.data.toolRequests) {
+              const name = tr?.name || tr?.toolName;
+              if (typeof name === 'string' && name) { toolCalls.add(name); }
+              // `arguments` is the model's own generated tool-call payload (e.g. a full
+              // apply_patch diff or create_file body) - it's part of the assistant's output,
+              // not the tool's result, and can dwarf the visible reply text.
+              if (typeof tr?.arguments === 'string' && tr.arguments) { outputParts.push(tr.arguments); }
+            }
+          }
+          hasContent = true;
+          break;
+        case 'tool.execution_start':
+          if (typeof event.data?.toolName === 'string' && event.data.toolName) { toolCalls.add(event.data.toolName); }
+          hasContent = true;
+          break;
+        default:
+          break;
+      }
+
+      lastTimestamp = timestamp;
+      endTime = timestamp;
+    }
+    flush();
+
+    if (interactions.length === 0) { return null; }
+
+    const hasRealCacheData = this.attachRealCacheData(filePath, interactions, hasRealPromptTokens);
+    this.applyCacheHeuristic(interactions, hasRealPromptTokens, hasRealCacheData);
+
+    const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
+
+    const session = this.buildSession(filePath, sessionId, startTime || fallbackTimestamp, endTime, interactions);
+    session.estimatedCostUsd = estimatedCostUsd;
+    session.cacheTokensEstimated = interactions.some(i => i.cacheTokensEstimated);
+    if (firstUserMessage) {
+      session.title = firstUserMessage.split('\n')[0].substring(0, 80);
+    }
+    return session;
+  }
+
+  /**
+   * Reads real per-call token/cache counts from the `llm_request` telemetry events in the
+   * sibling `debug-logs/{sessionId}/main.jsonl` file, when one exists next to `filePath`
+   * (i.e. `.../<ext-folder>/{chatSessions,transcripts}/{sessionId}.{json,jsonl}` ->
+   * `.../<ext-folder>/debug-logs/{sessionId}/main.jsonl`). `attrs.cachedTokens` there is the
+   * portion of `attrs.inputTokens` already served from the model provider's prompt cache
+   * (mirrors OpenAI's `usage.prompt_tokens_details.cached_tokens`, a subset of the total) -
+   * there's no separate cache-write/creation count, matching OpenAI-style automatic caching
+   * where writes aren't billed or reported separately.
+   *
+   * Buckets each event into whichever interaction most recently started before it (by
+   * timestamp), since a single user turn can trigger several LLM calls in agent mode and the
+   * debug log has no other shared identifier back to the parsed session content. Returns a
+   * `hasRealCacheData` flag per interaction so `applyCacheHeuristic` never overwrites a bucket
+   * that already reflects real telemetry, even when its real cache count happens to be zero.
+   */
+  private attachRealCacheData(filePath: string, interactions: Interaction[], hasRealPromptTokens: boolean[]): boolean[] {
+    const hasRealCacheData = interactions.map(() => false);
+    if (interactions.length === 0) { return hasRealCacheData; }
+
+    const debugEvents = this.readDebugLogEvents(filePath);
+    if (debugEvents.length === 0) { return hasRealCacheData; }
+
+    const order = interactions
+      .map((_, idx) => idx)
+      .sort((a, b) => interactions[a].timestamp.getTime() - interactions[b].timestamp.getTime());
+
+    const buckets = new Map<number, { input: number; output: number; cached: number; models: Map<string, number> }>();
+
+    for (const ev of debugEvents) {
+      let target = order[0];
+      for (const idx of order) {
+        if (interactions[idx].timestamp.getTime() <= ev.ts) { target = idx; } else { break; }
+      }
+      const bucket = buckets.get(target) ?? { input: 0, output: 0, cached: 0, models: new Map<string, number>() };
+      bucket.input += ev.inputTokens;
+      bucket.output += ev.outputTokens;
+      bucket.cached += ev.cachedTokens;
+      if (ev.model) { bucket.models.set(ev.model, (bucket.models.get(ev.model) ?? 0) + 1); }
+      buckets.set(target, bucket);
+    }
+
+    for (const [idx, bucket] of buckets) {
+      const interaction = interactions[idx];
+      interaction.inputTokens = bucket.input;
+      interaction.outputTokens = bucket.output;
+      interaction.cacheReadTokens = bucket.cached;
+      interaction.cacheWriteTokens = 0;
+      interaction.cacheTokensEstimated = false;
+      interaction.totalTokens = interaction.inputTokens + interaction.outputTokens + interaction.thinkingTokens;
+      interaction.effectiveContextTokens = interaction.inputTokens + interaction.cacheReadTokens + interaction.cacheWriteTokens;
+      if (bucket.models.size > 0) {
+        const bestModel = [...bucket.models.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        interaction.model = this.normalizeModelId(bestModel);
+      }
+      hasRealPromptTokens[idx] = true;
+      hasRealCacheData[idx] = true;
+    }
+
+    return hasRealCacheData;
+  }
+
+  /**
+   * Parses `llm_request` events out of `debug-logs/{sessionId}/main.jsonl`, if it can be found
+   * for `filePath`'s session. Derives the debug-log path structurally (parent-of-parent of
+   * `filePath`, plus `debug-logs/{sessionId}/main.jsonl`), which works for `transcripts/` and
+   * for `chatSessions/` when nested under the extension folder - but the top-level
+   * `workspaceRoot/chatSessions/{sessionId}.ext` VS Code actually writes (client-side chat
+   * storage, one directory higher than the extension folder) doesn't match that shape, so
+   * `findDebugLogPath()` falls back to searching every discovered `workspaceStorage` root for
+   * the same workspace hash. That fallback also covers Remote-WSL/SSH/Codespaces, where
+   * `chatSessions` (written by the local UI process) and `transcripts`/`debug-logs` (written by
+   * the remote extension host) live on two different filesystems under the same hash.
+   */
+  private readDebugLogEvents(filePath: string): Array<{ ts: number; inputTokens: number; outputTokens: number; cachedTokens: number; model: string }> {
+    try {
+      const sessionId = path.basename(filePath, path.extname(filePath));
+      const debugLogPath = this.findDebugLogPath(filePath, sessionId);
+      if (!debugLogPath) { return []; }
+
+      const content = fs.readFileSync(debugLogPath, 'utf-8');
+      const events: Array<{ ts: number; inputTokens: number; outputTokens: number; cachedTokens: number; model: string }> = [];
+      for (const line of content.trim().split('\n')) {
+        if (!line.trim()) { continue; }
+        try {
+          const event = JSON.parse(line);
+          if (event?.type !== 'llm_request') { continue; }
+          const attrs = event.attrs ?? {};
+          events.push({
+            ts: typeof event.ts === 'number' ? event.ts : 0,
+            inputTokens: typeof attrs.inputTokens === 'number' ? attrs.inputTokens : 0,
+            outputTokens: typeof attrs.outputTokens === 'number' ? attrs.outputTokens : 0,
+            cachedTokens: typeof attrs.cachedTokens === 'number' ? attrs.cachedTokens : 0,
+            model: typeof attrs.model === 'string' ? attrs.model : '',
+          });
+        } catch {
+          // Skip malformed telemetry lines.
+        }
+      }
+      return events.sort((a, b) => a.ts - b.ts);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Locates `debug-logs/{sessionId}/main.jsonl` for a session file. Tries the structural
+   * same-directory derivation first (cheap, and correct for `transcripts/` and any
+   * extension-nested `chatSessions/`), then falls back to searching every discovered
+   * `workspaceStorage` root for the same workspace-hash folder - this also covers the top-level
+   * `workspaceRoot/chatSessions/{sessionId}.ext` layout (one directory above the extension
+   * folder, so the structural derivation misses it even on a single machine) and the
+   * Remote-WSL/SSH/Codespaces case where the client-side `chatSessions` file and the remote
+   * host's `debug-logs` sit under the same hash on two entirely different filesystems.
+   */
+  private findDebugLogPath(filePath: string, sessionId: string): string | null {
+    const structuralExtFolderRoot = path.dirname(path.dirname(filePath));
+    const structuralCandidate = path.join(structuralExtFolderRoot, 'debug-logs', sessionId, 'main.jsonl');
+    if (fs.existsSync(structuralCandidate)) { return structuralCandidate; }
+
+    const normalized = filePath.replace(/\\/g, '/');
+    const hashMatch = normalized.match(/\/workspaceStorage\/([^/]+)\//);
+    if (!hashMatch) { return null; }
+    const hash = hashMatch[1];
+
+    for (const dir of this.sessionDirs) {
+      if (!dir.replace(/\\/g, '/').endsWith('/workspaceStorage')) { continue; }
+      const workspaceRoot = path.join(dir, hash);
+      for (const folder of COPILOT_EXTENSION_FOLDERS) {
+        const candidate = path.join(workspaceRoot, folder, 'debug-logs', sessionId, 'main.jsonl');
+        if (candidate !== structuralCandidate && fs.existsSync(candidate)) { return candidate; }
+      }
+    }
+    return null;
+  }
+
+  private isCopilotChatTranscriptPath(filePath: string): boolean {
+    return filePath.replace(/\\/g, '/').includes('/transcripts/') && filePath.endsWith('.jsonl');
+  }
+
   private buildSession(filePath: string, id: string, startTime: Date, endTime: Date, interactions: Interaction[]): Session {
     return {
       id,
@@ -656,6 +966,86 @@ export class CopilotProvider extends BaseProvider {
       }
     }
     return 0;
+  }
+
+  /**
+   * Estimates cache-read and cache-write tokens via turn-over-turn context diffing. Used as a
+   * fallback only - real cache counts ARE available from `debug-logs/{sessionId}/main.jsonl`
+   * (see `attachRealCacheData()` below and wiki/providers/copilot.md, "Cache tokens: real data
+   * exists"), but only for sessions started after the user opts into GitHub Copilot's own
+   * `github.copilot.chat.agentDebugLog.fileLogging.enabled` setting (off by default). For
+   * everyone else - the overwhelming majority of users, and every session predating that
+   * setting - session logs carry no cache breakdown at all, so this heuristic is what fills the
+   * gap. This is a calculated estimate, not measured data - every interaction it touches is
+   * flagged via `cacheTokensEstimated`.
+   *
+   * Cache read: assumes the previous turn's full context (its total prompt tokens + its
+   * output tokens) gets reused via prompt caching, so cacheRead = min(this turn's full
+   * context, that baseline). Resets the baseline (no reuse assumed) whenever prompt tokens
+   * don't grow or the model changes, since a shrink or model switch usually means compaction
+   * or an unrelated request sharing the same session file, not genuine cache reuse.
+   *
+   * Cache write: the growth above the cache-read baseline (the "fresh delta") is attributed
+   * to a new cache write rather than left as plain uncached input. This follows directly from
+   * the cache-read assumption above - the next turn's cache-read estimate only makes sense if
+   * this turn's new content actually got written to cache, so treating the two as symmetric is
+   * the more internally consistent choice. This is a rougher estimate than cache-read: real
+   * data can deviate (e.g. a large one-off tool result added without a cache breakpoint would
+   * show as plain input in reality but gets counted as cache-write here), so accuracy on the
+   * read/write split specifically should be treated as lower-confidence than the total
+   * fresh-vs-cached split.
+   *
+   * Only runs on interactions where `hasRealPromptTokens[i]` is true - never stacks an
+   * estimate on top of an already-estimated (text-based) input token count. Also skips any
+   * interaction flagged in `hasRealCacheData` (real telemetry from `attachRealCacheData`),
+   * even when its real cache-read count happens to be zero - a confirmed zero shouldn't be
+   * overwritten by a guess. Real interactions (estimated or not) still update the running
+   * baseline so later, telemetry-less turns in the same session can diff against them.
+   *
+   * `this.cacheEstimationConvention` controls how the estimate is written back:
+   *  - 'inclusive' (default): inputTokens is left as the real reported total; cacheReadTokens
+   *    and cacheWriteTokens become subsets of it. Matches costEstimation.ts's
+   *    `inputTokens - cacheReadTokens - cacheWriteTokens` subtraction, so cost stays accurate.
+   *  - 'exclusive': inputTokens is reduced to just whatever's left after cache read + write
+   *    (often ~0); cacheReadTokens/cacheWriteTokens are additive on top. Matches Claude Code's
+   *    native convention and the dashboard's Cache Efficiency widget (budgetManager.ts
+   *    computeCacheMetrics), so that widget's hit-rate % is exact - but can understate cost
+   *    when cache tokens exceed fresh tokens, since costEstimation.ts would then subtract twice.
+   */
+  private applyCacheHeuristic(interactions: Interaction[], hasRealPromptTokens: boolean[], hasRealCacheData?: boolean[]): void {
+    if (!this.cacheEstimationEnabled) { return; }
+
+    let prevFullContext: number | null = null;
+    let prevModel: string | null = null;
+
+    for (let i = 0; i < interactions.length; i++) {
+      const interaction = interactions[i];
+      const isReal = hasRealPromptTokens[i];
+      const isRealCache = hasRealCacheData?.[i] ?? false;
+      const fullContext = interaction.inputTokens + interaction.cacheReadTokens + interaction.cacheWriteTokens;
+
+      if (!isReal || isRealCache || interaction.cacheReadTokens > 0 || interaction.cacheWriteTokens > 0) {
+        prevFullContext = isReal ? fullContext + interaction.outputTokens : null;
+        prevModel = isReal ? interaction.model : null;
+        continue;
+      }
+
+      if (prevFullContext !== null && prevModel === interaction.model && fullContext > prevFullContext) {
+        const cacheRead = Math.min(fullContext, prevFullContext);
+        const cacheWrite = fullContext - cacheRead;
+        interaction.cacheReadTokens = cacheRead;
+        interaction.cacheWriteTokens = cacheWrite;
+        interaction.cacheTokensEstimated = true;
+        if (this.cacheEstimationConvention === 'exclusive') {
+          interaction.inputTokens = fullContext - cacheRead - cacheWrite;
+          interaction.effectiveContextTokens = interaction.inputTokens + cacheRead + cacheWrite;
+          interaction.totalTokens = interaction.inputTokens + interaction.outputTokens + interaction.thinkingTokens;
+        }
+      }
+
+      prevFullContext = fullContext + interaction.outputTokens;
+      prevModel = interaction.model;
+    }
   }
 
   private addSessionFilesFromDir(files: Set<string>, dir: string): void {

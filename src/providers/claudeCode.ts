@@ -8,6 +8,7 @@ import * as os from 'os';
 import { BaseProvider } from './base';
 import { Session, Interaction } from '../types';
 import { calculateCost } from '../core/costEstimation';
+import { extractContextRefs } from '../core/contextReferences';
 
 export class ClaudeCodeProvider extends BaseProvider {
   readonly id = 'claudeCode' as const;
@@ -18,7 +19,7 @@ export class ClaudeCodeProvider extends BaseProvider {
   constructor(additionalPaths: string[] = []) {
     super();
     this.projectsDir = path.join(os.homedir(), '.claude', 'projects');
-    this.extraDirs = additionalPaths.map(p => p.replace(/^~/, os.homedir()));
+    this.extraDirs = additionalPaths.map(p => this.expandHome(p));
   }
 
   getSessionDirectories(): string[] { return [this.projectsDir, ...this.extraDirs]; }
@@ -61,6 +62,7 @@ export class ClaudeCodeProvider extends BaseProvider {
       let title: string | undefined;
       const seenMessageIds = new Set<string>();
       let pendingUserPreview: string | undefined;
+      let pendingUserFullText: string | undefined;
       const mcpServers = new Set<string>();
       let estimatedBaseContextTokens: number | undefined;
       let lastPermissionMode: string | undefined;
@@ -119,7 +121,8 @@ export class ClaudeCodeProvider extends BaseProvider {
           const entryRole = entry.role ?? entry.type ?? entry.message?.role;
           if (entryRole === 'user') {
             const content = entry.message?.content ?? entry.content ?? '';
-            pendingUserPreview = this.extractTextPreview(content, 200);
+            pendingUserFullText = this.extractTextPreview(content, 20000);
+            pendingUserPreview = pendingUserFullText?.substring(0, 200);
           }
 
           // Claude Code provides actual token counts
@@ -190,10 +193,12 @@ export class ClaudeCodeProvider extends BaseProvider {
             commandRuns: commandRuns.length > 0 ? commandRuns : undefined,
             fileAccesses: fileAccesses.length > 0 ? fileAccesses : undefined,
             promptPreview: pendingUserPreview,
+            contextRefs: extractContextRefs(pendingUserFullText),
             webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
             webFetchRequests: webFetchRequests > 0 ? webFetchRequests : undefined,
           });
           pendingUserPreview = undefined; // consumed by first assistant turn after this user message
+          pendingUserFullText = undefined;
         } catch { /* skip line */ }
       }
 

@@ -6,7 +6,7 @@
  */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import { CopilotProvider } from './providers/copilot';
+import { CopilotProvider, CopilotCacheConvention } from './providers/copilot';
 import { AntigravityProvider } from './providers/antigravity';
 import { ClaudeCodeProvider } from './providers/claudeCode';
 import { CodexProvider } from './providers/codex';
@@ -23,6 +23,8 @@ import { UsageAnalysisProvider } from './webview/usageAnalysis';
 import { SessionsViewProvider } from './webview/sessionsView';
 import { SessionCompareProvider } from './webview/sessionCompareView';
 import { SessionTagsStore } from './core/sessionTagsStore';
+import { InsightsStateStore } from './core/insightsStateStore';
+import { computeInsights } from './core/insightsEngine';
 import { PricingViewProvider } from './webview/pricingView';
 import { buildHygieneReports } from './core/repositoryHygiene';
 import { AcceptanceTracker } from './core/acceptanceTracker';
@@ -33,6 +35,7 @@ import { PromptHistoryStore } from './core/promptHistory';
 import { PromptHistoryViewProvider } from './webview/promptHistoryView';
 import { TokenCalculatorProvider } from './webview/tokenCalculator';
 import { BenchmarkViewProvider } from './webview/benchmarkView';
+import { AbTestViewProvider } from './webview/abTestView';
 import { ClaudeAccountViewProvider } from './webview/claudeAccountView';
 import { detectLiveSessions } from './core/liveSessionMonitor';
 import { SessionSnapshotStore } from './core/sessionSnapshotStore';
@@ -62,10 +65,12 @@ const promptHistoryStore = new PromptHistoryStore();
 const acceptanceTracker = new AcceptanceTracker();
 const diffTracker = new DiffTracker();
 let sessionTagsStore: SessionTagsStore;
+let insightsStateStore: InsightsStateStore;
 const DEFAULT_SESSION_LOOKBACK_DAYS = 400;
 const GITHUB_USER_STATE_KEY = 'aiInsights.githubUser';
 const LIVE_BUDGET_CONFIG_KEY = 'aiInsights.liveBudgetConfig';
 const RATE_LIMIT_EVENTS_KEY = 'aiInsights.rateLimitEvents';
+const COPILOT_DEBUG_LOG_PROMPT_RESOLVED_KEY = 'aiInsights.copilotDebugLogPromptResolved';
 let liveBudgetConfig: LiveBudgetConfig | null = null;
 let rateLimitEvents: RateLimitEvent[] = [];
 
@@ -82,6 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.getConfiguration('aiInsights').get<number>('providers.copilot.maxSessionSnapshots', 2000),
   );
   sessionTagsStore = new SessionTagsStore(context.globalStorageUri.fsPath);
+  insightsStateStore = new InsightsStateStore(context.globalStorageUri.fsPath);
   acceptanceTracker.register(context);
   diffTracker.register(context);
 
@@ -118,6 +124,14 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('aiInsights.refresh', () => refresh(providers)),
     vscode.commands.registerCommand('aiInsights.showDashboard', () => showDashboard(context)),
+    vscode.commands.registerCommand('aiInsights.dismissInsight', (id: string) => {
+      insightsStateStore.dismiss(id);
+      showDashboard(context);
+    }),
+    vscode.commands.registerCommand('aiInsights.snoozeInsight', (id: string) => {
+      insightsStateStore.snooze(id);
+      showDashboard(context);
+    }),
     vscode.commands.registerCommand('aiInsights.showCharts', () => showCharts(context)),
     vscode.commands.registerCommand('aiInsights.showDiagnostics', () => showDiagnostics(context, providers)),
     vscode.commands.registerCommand('aiInsights.showUsageAnalysis', () => showUsageAnalysis(context)),
@@ -133,6 +147,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('aiInsights.showPromptHistory', () => showPromptHistory(context)),
     vscode.commands.registerCommand('aiInsights.showTokenCalculator', () => TokenCalculatorProvider.createPanel(context)),
     vscode.commands.registerCommand('aiInsights.showBenchmark', () => BenchmarkViewProvider.createPanel(context)),
+    vscode.commands.registerCommand('aiInsights.showAbTest', () => AbTestViewProvider.createPanel(context)),
     vscode.commands.registerCommand('aiInsights.showClaudeAccount', () => showClaudeAccount(context)),
 vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string, note: string) =>
       handleLogRateLimitHit(context, provider as any, note),
@@ -157,7 +172,10 @@ vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string,
     }),
     vscode.commands.registerCommand('aiInsights.startSharing', () => handleStartSharing()),
     vscode.commands.registerCommand('aiInsights.stopSharing', () => handleStopSharing()),
+    vscode.commands.registerCommand('aiInsights.enableCopilotRealCacheData', () => promptEnableCopilotDebugLogging(context, { force: true })),
   );
+
+  void maybePromptEnableCopilotDebugLogging(context);
 
   refresh(providers);
 
@@ -348,23 +366,30 @@ function getEnabledProviders(): BaseProvider[] {
 
   if (config.get<boolean>('providers.copilot.enabled', true)) {
     const multiplier = config.get<number>('providers.copilot.inputTokenMultiplier', 1.0);
-    providers.push(new CopilotProvider(multiplier));
+    const cacheEstimationEnabled = config.get<boolean>('providers.copilot.cacheEstimation.enabled', true);
+    const cacheEstimationConvention = config.get<CopilotCacheConvention>('providers.copilot.cacheEstimation.convention', 'inclusive');
+    const extraPaths = config.get<string[]>('providers.copilot.additionalSessionPaths', []);
+    providers.push(new CopilotProvider(multiplier, cacheEstimationEnabled, cacheEstimationConvention, extraPaths));
   }
   if (config.get<boolean>('providers.antigravity.enabled', true)) {
-    providers.push(new AntigravityProvider());
+    const extraPaths = config.get<string[]>('providers.antigravity.additionalSessionPaths', []);
+    providers.push(new AntigravityProvider(extraPaths));
   }
   if (config.get<boolean>('providers.claudeCode.enabled', true)) {
     const extraPaths = config.get<string[]>('providers.claudeCode.additionalSessionPaths', []);
     providers.push(new ClaudeCodeProvider(extraPaths));
   }
   if (config.get<boolean>('providers.codex.enabled', true)) {
-    providers.push(new CodexProvider());
+    const extraPaths = config.get<string[]>('providers.codex.additionalSessionPaths', []);
+    providers.push(new CodexProvider(extraPaths));
   }
   if (config.get<boolean>('providers.jetbrainsAI.enabled', true)) {
-    providers.push(new JetBrainsAIProvider());
+    const extraPaths = config.get<string[]>('providers.jetbrainsAI.additionalSessionPaths', []);
+    providers.push(new JetBrainsAIProvider(extraPaths));
   }
   if (config.get<boolean>('providers.visualStudio.enabled', true)) {
-    providers.push(new VisualStudioProvider());
+    const extraPaths = config.get<string[]>('providers.visualStudio.additionalSessionPaths', []);
+    providers.push(new VisualStudioProvider(extraPaths));
   }
 
   return providers;
@@ -525,23 +550,23 @@ function updateStatusBar(metrics: AggregatedMetrics) {
     statusBarItem.text =
       `$(record) LIVE · ctx: ${fmt(primary.lastInputTokens)} (${primary.contextPct}%) ${healthIcon}${multiLabel} · ${today} today`;
 
+    const fmt2 = (n: number) => n.toLocaleString();
+    const contextLimitLabel = fmt2(primary.contextLimitTokens);
     const lines = [
       `🔴 **Session in progress** - don't close VS Code`,
       ``,
-      `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''}`,
-      ``,
+      `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''} · ${contextLimitLabel} ctx limit`,
     ];
 
     for (const live of liveSessions) {
       const titleLine = live.sessionTitle ? `**${live.sessionTitle}**` : '_Unnamed session_';
       const ctxBar = buildMiniBar(live.contextPct, 20);
       const healthIcon2 = live.healthLabel === 'healthy' ? '✅' : live.healthLabel === 'warning' ? '⚠️' : '🔴';
-      const fmt2 = (n: number) => n.toLocaleString();
       lines.push(
-        titleLine,
-        `\`${ctxBar}\` ${live.contextPct}% · ${fmt2(live.lastInputTokens)} / ${fmt2(live.contextLimitTokens)} tokens`,
-        `${healthIcon2} **${live.healthLabel}** (${live.healthScore}/10) · ${live.turnsCount} turns · ${live.cacheEfficiencyPct}% cache`,
         ``,
+        titleLine,
+        `${ctxBar} ${live.contextPct}% · ${fmt2(live.lastInputTokens)} tokens`,
+        `${healthIcon2} **${live.healthLabel}** (${live.healthScore}/10) · ${live.turnsCount} turns · ${live.cacheEfficiencyPct}% cache`,
       );
     }
 
@@ -618,7 +643,14 @@ async function showDashboard(context: vscode.ExtensionContext) {
     const roiCfg = { hourlyRate: cfg.get<number>('roi.developerHourlyRate', 75), tokensPerHourSaved: cfg.get<number>('roi.outputTokensPerHourSaved', 3000) };
     const acceptance = acceptanceTracker.getStats();
     const healthScore = computeUsageHealthScore(latestMetrics, allSessions, acceptance);
-    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore, diffTracker.getStats());
+    const copilotDebugLoggingEnabled = vscode.workspace.getConfiguration('github.copilot.chat').get<boolean>('agentDebugLog.fileLogging.enabled', false);
+    const copilotChatExtensionInstalled = !!vscode.extensions.getExtension('github.copilot-chat');
+    const insights = computeInsights(
+      { metrics: latestMetrics, acceptance, copilotDebugLoggingEnabled, copilotChatExtensionInstalled },
+      insightsStateStore.getDismissed(),
+      insightsStateStore.getSnoozedUntil(),
+    );
+    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore, diffTracker.getStats(), insights);
   }
 }
 
@@ -630,6 +662,51 @@ async function handleConnectGitHub(context: vscode.ExtensionContext) {
     await refresh(getEnabledProviders());
     showDashboard(context);
   }
+}
+
+/**
+ * On first activation (and once per re-arm via the "don't ask again" reset, or the manual
+ * command), offers to turn on GitHub Copilot's own `agentDebugLog.fileLogging` setting so
+ * `copilot.ts` can read real cache/input/output tokens instead of calculating estimates (see
+ * `attachRealCacheData()` in copilot.ts and wiki/providers/copilot.md). Never flips the setting
+ * without explicit consent - enabling it makes Copilot write full prompt/code content to local
+ * debug-log files that don't otherwise exist, which is a real data-handling change, not just a
+ * cosmetic toggle.
+ */
+async function maybePromptEnableCopilotDebugLogging(context: vscode.ExtensionContext): Promise<void> {
+  if (!vscode.workspace.getConfiguration('aiInsights').get<boolean>('providers.copilot.promptToEnableRealCacheData', true)) { return; }
+  if (context.globalState.get<boolean>(COPILOT_DEBUG_LOG_PROMPT_RESOLVED_KEY, false)) { return; }
+  await promptEnableCopilotDebugLogging(context, { force: false });
+}
+
+async function promptEnableCopilotDebugLogging(context: vscode.ExtensionContext, options: { force: boolean }): Promise<void> {
+  if (!vscode.extensions.getExtension('github.copilot-chat')) {
+    if (options.force) {
+      vscode.window.showInformationMessage('AI Insights: GitHub Copilot Chat extension not found - install it first to enable real cache data.');
+    }
+    return;
+  }
+
+  const copilotChatCfg = vscode.workspace.getConfiguration('github.copilot.chat');
+  if (copilotChatCfg.get<boolean>('agentDebugLog.fileLogging.enabled', false)) {
+    await context.globalState.update(COPILOT_DEBUG_LOG_PROMPT_RESOLVED_KEY, true);
+    if (options.force) { vscode.window.showInformationMessage('AI Insights: GitHub Copilot debug file logging is already enabled.'); }
+    return;
+  }
+
+  const choice = await vscode.window.showInformationMessage(
+    'AI Insights can show exact GitHub Copilot cache/token usage instead of calculated estimates, by turning on a GitHub Copilot setting (github.copilot.chat.agentDebugLog.fileLogging.enabled). Note: this makes Copilot write your full prompts and code context to local per-session debug-log files that don\'t exist otherwise - see the README for details before enabling.',
+    'Enable', 'Not now', 'Don\'t ask again',
+  );
+
+  if (choice === 'Enable') {
+    await copilotChatCfg.update('agentDebugLog.fileLogging.enabled', true, vscode.ConfigurationTarget.Global);
+    await context.globalState.update(COPILOT_DEBUG_LOG_PROMPT_RESOLVED_KEY, true);
+    vscode.window.showInformationMessage('AI Insights: enabled GitHub Copilot debug file logging. Real cache/token data will start appearing for new Copilot sessions.');
+  } else if (choice === 'Don\'t ask again') {
+    await context.globalState.update(COPILOT_DEBUG_LOG_PROMPT_RESOLVED_KEY, true);
+  }
+  // 'Not now' or dismissed: leave unresolved so it's offered again on the next activation.
 }
 
 async function handleDisconnectGitHub(context: vscode.ExtensionContext) {
@@ -647,13 +724,13 @@ async function showCharts(context: vscode.ExtensionContext) {
   if (latestMetrics) { ChartsProvider.createPanel(context, latestMetrics); }
 }
 
-async function showDiagnostics(_context: vscode.ExtensionContext, providers: BaseProvider[]) {
+async function showDiagnostics(context: vscode.ExtensionContext, providers: BaseProvider[]) {
   if (!latestMetrics) { await refresh(providers); }
   const report = await DiagnosticsProvider.generateReport(
-    providers, cacheManager,
+    context, providers, cacheManager,
     allSessions.length, latestMetrics?.currentMonth.totalTokens || 0,
   );
-  DiagnosticsProvider.createPanel(report);
+  DiagnosticsProvider.createPanel(context, report);
 }
 
 async function showUsageAnalysis(context: vscode.ExtensionContext) {

@@ -4,6 +4,7 @@
  * to discover and parse their session log files into a unified Session format.
  */
 
+import * as os from 'os';
 import { Session, ProviderId } from '../types';
 
 export abstract class BaseProvider {
@@ -72,5 +73,12 @@ export abstract class BaseProvider {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
     return date >= cutoff;
+  }
+
+  /**
+   * Expand a leading ~ to the user's home directory, for user-supplied additional session paths.
+   */
+  protected expandHome(p: string): string {
+    return p.replace(/^~/, os.homedir());
   }
 }

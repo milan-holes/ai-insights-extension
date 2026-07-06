@@ -9,6 +9,8 @@ export interface HealthComponent {
   points: number;
   maxPoints: number;
   detail: string;
+  /** Plain-language description of the formula/threshold behind this component's score */
+  rule: string;
 }
 
 export interface UsageHealthScore {
@@ -17,8 +19,6 @@ export interface UsageHealthScore {
   grade: 'A' | 'B' | 'C' | 'D' | 'F';
   gradeColor: string;
   components: HealthComponent[];
-  /** Up to 3 actionable improvement bullets */
-  topRecommendations: string[];
 }
 
 function gradeOf(s: number): { grade: 'A' | 'B' | 'C' | 'D' | 'F'; color: string } {
@@ -35,7 +35,6 @@ export function computeUsageHealthScore(
   acceptance?: AcceptanceMetrics,
 ): UsageHealthScore {
   const components: HealthComponent[] = [];
-  const recs: string[] = [];
 
   // ── 1. Cache Efficiency (25 pts) ───────────────────────────────────────────
   // Full score at ≥40% hit rate; scales linearly below.
@@ -48,10 +47,8 @@ export function computeUsageHealthScore(
     points: cachePoints,
     maxPoints: 25,
     detail: `${Math.round(hitRate * 100)}% cache hit rate`,
+    rule: 'Full 25 pts at ≥40% cache hit rate; scales down linearly to 0 pts at 0%.',
   });
-  if (hitRate < 0.2) {
-    recs.push('Place stable system context before dynamic content to improve cache hit rate');
-  }
 
   // ── 2. Context Quality (25 pts) ────────────────────────────────────────────
   // Average contextQualityScore (0–100) across last 20 scored sessions.
@@ -73,10 +70,8 @@ export function computeUsageHealthScore(
     points: ctxPoints,
     maxPoints: 25,
     detail: `avg ${Math.round(avgCQ)}/100 across recent sessions`,
+    rule: 'Average context-quality score (0–100) across up to 30 recent sessions with ≥3 turns; 25 pts scaled 1:1 with that average.',
   });
-  if (avgCQ < 50) {
-    recs.push('Restart sessions more often — context rot is reducing response quality over time');
-  }
 
   // ── 3. Cost Efficiency (20 pts) ────────────────────────────────────────────
   // Output/input token ratio. Full score at ratio ≥0.25 (generating ¼ token out per in).
@@ -89,10 +84,8 @@ export function computeUsageHealthScore(
     points: effPoints,
     maxPoints: 20,
     detail: `${eff.toFixed(3)} output/input ratio`,
+    rule: 'Full 20 pts at an output/input token ratio of ≥0.25; scales down linearly to 0 pts at 0.',
   });
-  if (eff < 0.08) {
-    recs.push('Low output/input ratio — use more targeted prompts to extract more per token spent');
-  }
 
   // ── 4. Completion Acceptance (15 pts) ──────────────────────────────────────
   // Full score at ≥30% acceptance rate; neutral 8 pts when data is insufficient.
@@ -108,10 +101,10 @@ export function computeUsageHealthScore(
     detail: hasAccData
       ? `${Math.round(accRate * 100)}% acceptance rate`
       : 'not enough data yet',
+    rule: hasAccData
+      ? 'Full 15 pts at ≥30% completion acceptance rate; scales down linearly to 0 pts at 0%.'
+      : 'Needs ≥10 tracked completions before scoring; shows a neutral 8/15 pts until then.',
   });
-  if (hasAccData && accRate < 0.15) {
-    recs.push('Acceptance rate is low — try shorter, more specific prompts for inline completions');
-  }
 
   // ── 5. Budget Health (15 pts) ──────────────────────────────────────────────
   // Full score when no budget used; zero at 100% utilized.
@@ -124,23 +117,16 @@ export function computeUsageHealthScore(
     points: budgetPoints,
     maxPoints: 15,
     detail: `${Math.round(metrics.budget.budgetUtilizationPct)}% of monthly budget consumed`,
+    rule: 'Full 15 pts at 0% of monthly budget consumed; 0 pts once 100% is consumed (linear).',
   });
-  if (budgetUsedFraction > 0.8) {
-    recs.push('Over 80% of monthly budget used — review top sessions in Sessions view to find optimization targets');
-  }
 
   const overall = components.reduce((s, c) => s + c.points, 0);
   const { grade, color } = gradeOf(overall);
-
-  if (recs.length === 0) {
-    recs.push('Usage patterns look healthy — keep it up!');
-  }
 
   return {
     overall,
     grade,
     gradeColor: color,
     components,
-    topRecommendations: recs.slice(0, 3),
   };
 }

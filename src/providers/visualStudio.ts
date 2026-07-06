@@ -33,6 +33,7 @@ import { decodeMulti, decode } from '@msgpack/msgpack';
 import { BaseProvider } from './base';
 import { calculateCost } from '../core/costEstimation';
 import { Session, Interaction } from '../types';
+import { extractContextRefs } from '../core/contextReferences';
 
 const SCAN_SKIP_DIRS = new Set([
   'node_modules', '.git', '.github', 'bin', 'obj', 'out', 'dist', 'build', 'target',
@@ -45,6 +46,13 @@ const SCAN_SKIP_DIRS = new Set([
 export class VisualStudioProvider extends BaseProvider {
   readonly id = 'visualStudio' as const;
   readonly displayName = 'Visual Studio';
+
+  private readonly extraRoots: string[];
+
+  constructor(additionalPaths: string[] = []) {
+    super();
+    this.extraRoots = additionalPaths.map(p => this.expandHome(p));
+  }
 
   getSessionDirectories(): string[] {
     return this.buildScanRoots().map(r => r + ' (.vs/**/copilot-chat)');
@@ -197,6 +205,7 @@ export class VisualStudioProvider extends BaseProvider {
         mode: 'chat',
         toolCalls: [],
         promptPreview: reqText.substring(0, 200) || undefined,
+        contextRefs: extractContextRefs(reqText),
       });
     }
 
@@ -340,6 +349,8 @@ export class VisualStudioProvider extends BaseProvider {
         try { if (fs.existsSync(p)) { roots.push(p); } } catch { /* ok */ }
       }
     }
+
+    roots.push(...this.extraRoots);
 
     return roots;
   }

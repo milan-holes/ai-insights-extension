@@ -15,6 +15,7 @@ interface ReplayTurn {
   thinkingTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  cacheTokensEstimated: boolean;
   totalTokens: number;
   effectiveContextTokens: number;
   toolCalls: string[];
@@ -101,6 +102,7 @@ export class ReplayViewProvider {
       thinkingTokens: i.thinkingTokens,
       cacheReadTokens: i.cacheReadTokens,
       cacheWriteTokens: i.cacheWriteTokens,
+      cacheTokensEstimated: i.cacheTokensEstimated || false,
       totalTokens: i.totalTokens,
       effectiveContextTokens: i.effectiveContextTokens,
       toolCalls: i.toolCalls || [],
@@ -416,8 +418,8 @@ ${turns.length === 0 ? `<div class="empty-state">No interactions recorded for th
       '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:var(--primary)"></span>Input</span><span class="tok-val">'+fmtN(t.inputTokens)+'</span></div>'+
       '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:var(--stage-3)"></span>Output</span><span class="tok-val">'+fmtN(t.outputTokens)+'</span></div>'+
       (t.thinkingTokens>0 ? '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:rgba(139,92,246,.8)"></span>Thinking</span><span class="tok-val">'+fmtN(t.thinkingTokens)+'</span></div>' : '')+
-      (t.cacheReadTokens>0 ? '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:rgba(57,255,20,.55)"></span>Cache Read</span><span class="tok-val">'+fmtN(t.cacheReadTokens)+'</span></div>' : '')+
-      (t.cacheWriteTokens>0 ? '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:rgba(57,255,20,.28)"></span>Cache Write</span><span class="tok-val">'+fmtN(t.cacheWriteTokens)+'</span></div>' : '')+
+      (t.cacheReadTokens>0 ? '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:rgba(57,255,20,.55)"></span>Cache Read'+(t.cacheTokensEstimated?' <span style="opacity:.7" title="Calculated estimate, not measured by GitHub Copilot">(calc.)</span>':'')+'</span><span class="tok-val">'+fmtN(t.cacheReadTokens)+'</span></div>' : '')+
+      (t.cacheWriteTokens>0 ? '<div class="tok-r"><span class="tok-lbl"><span class="tok-dot" style="background:rgba(57,255,20,.28)"></span>Cache Write'+(t.cacheTokensEstimated?' <span style="opacity:.7" title="Calculated estimate, not measured by GitHub Copilot">(calc.)</span>':'')+'</span><span class="tok-val">'+fmtN(t.cacheWriteTokens)+'</span></div>' : '')+
       '<div class="tok-r"><span class="tok-lbl">Eff. Context</span><span class="tok-val">'+fmtN(t.effectiveContextTokens)+'</span></div>'+
       '<div class="cost-row"><span class="cost-lbl">Turn Cost</span><span class="cost-val">'+fmtC(t.costUsd)+'</span></div>';
     document.getElementById('tok-content').innerHTML = tokHtml;

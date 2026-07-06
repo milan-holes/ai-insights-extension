@@ -47,9 +47,29 @@ AI Insights computes every metric from **AI session logs stored locally on your 
 - **Multiple computers, same subscription** - if you use the same account from another machine, that machine's sessions aren't scanned here. Totals only reflect activity on the machine running the extension.
 - **Cleared/deleted history** - clearing chat history, workspace storage, or provider log directories (`~/.claude`, `~/.codex`, etc.) removes that usage from future calculations. Past totals already shown are not retroactively corrected.
 - **Hidden system prompts** - providers inject a system prompt plus tool/agent instructions server-side that aren't always exposed in local session logs, so real input/context size can be higher than what's shown. Where this applies (currently Copilot JSON sessions), the `aiInsights.providers.copilot.inputTokenMultiplier` setting lets you set a default multiplier to approximate the missing overhead.
-- **No GitHub Copilot cache tracking** - GitHub's usage-based billing meters cached prompt tokens separately (and at a discount), but Copilot's local session logs don't expose a cache-read/cache-write breakdown - the underlying `assistant.usage` events report `cacheReadTokens`/`cacheWriteTokens` as `0` regardless of model ([github/copilot-sdk#1073](https://github.com/github/copilot-sdk/issues/1073)), and enabling Copilot's chat debug file logging only writes a combined input-token count, not a separate cache figure ([microsoft/vscode#311186](https://github.com/microsoft/vscode/issues/311186)). So Cache Hit Rate / Cache Savings will show `0%`/`$0` for Copilot even if your real invoice includes a cache discount. Cache metrics for providers with real per-request cache counts (e.g. Claude Code) are unaffected.
+- **GitHub Copilot cache tracking depends on one Copilot setting** - `chatSessions`/`transcripts` files alone never carry a cache-read/cache-write breakdown, so by default Copilot's Cache Hit Rate / Cache Savings numbers are a **calculated estimate** (turn-over-turn context diffing, flagged "(calc.)" everywhere it's shown), not measured data. If you turn on GitHub Copilot's own `github.copilot.chat.agentDebugLog.fileLogging` setting, Copilot additionally writes real per-request `inputTokens`/`outputTokens`/`cachedTokens` to local debug-log files, and AI Insights reads those automatically and uses them in place of the estimate wherever they exist - real data for sessions logged after you enable it, calculated estimates for everything else (older sessions, or if you leave it off). AI Insights will offer to turn this Copilot setting on for you the first time it runs (one-time prompt, never silent) - see "GitHub Copilot: Real Cache/Token Data" below for what that involves and how to trigger it manually. Cache metrics for providers with real per-request cache counts by default (e.g. Claude Code) are unaffected.
+- **Single-turn Copilot sessions never show a cache estimate, by design** - the calculated estimate above works by comparing a turn's context size to the *previous turn in the same session*; a session with only one exchange (one message, one reply) has no earlier turn to compare against, so its cache numbers are `0` regardless of settings. This is expected, not a sign the estimate is broken - most Copilot sessions on a typical machine turn out to be single-turn, which is usually why cache data looks sparse when scanning older history.
 
 Treat these numbers as a **local, best-effort estimate** for tracking trends - not an exact reconciliation of your invoice.
+
+## 🔓 GitHub Copilot: Real Cache/Token Data
+
+By default, GitHub Copilot's local session files don't include a cache-read/cache-write breakdown, so AI Insights calculates one via turn-over-turn context diffing and marks it "(calc.)" everywhere it's shown - see [Accuracy & Limitations](#️-accuracy--limitations) above.
+
+GitHub Copilot itself can produce **real** per-request `inputTokens` / `outputTokens` / `cachedTokens` if you turn on its own setting:
+
+```json
+"github.copilot.chat.agentDebugLog.fileLogging.enabled": true
+```
+
+Once this is on, Copilot writes that data to local files at `debug-logs/{sessionId}/main.jsonl` (inside your VS Code `workspaceStorage`), and AI Insights reads it automatically - no restart or extra configuration needed on the AI Insights side, including on Remote-WSL/SSH/Codespaces setups where the session file and its debug log can live on different filesystems (client vs. remote host) sharing the same workspace folder. Real data covers sessions logged *after* you enable it; older sessions keep using the calculated estimate. `transcripts/{sessionId}.jsonl`, the session format this depends on, has been confirmed present since at least Copilot Chat 0.46.0, so most current installs already have it.
+
+**What enabling it actually does, so you can decide for yourself:** this is a GitHub Copilot setting, not an AI Insights one - it makes the Copilot Chat extension write your full prompts and code context to local, unencrypted debug-log files that don't otherwise exist. Nothing is sent anywhere new (it's still 100% local, same as every other file AI Insights reads), but it is an additional local copy of your conversation content being persisted to disk. If that's a concern for your workplace's data-handling policy, leave it off - AI Insights works fine either way, just with estimates instead of exact cache numbers.
+
+**How to enable it:**
+- AI Insights shows a one-time prompt on first activation (if GitHub Copilot Chat is installed) offering to turn this setting on for you - click "Enable" if you want real data, "Not now" to be asked again later, or "Don't ask again" to dismiss permanently.
+- Missed the prompt, or want to enable it later? Click **"✅ Enable Real Cache Data"** in the dashboard's or Copilot credits page's Cache Efficiency widget (shown whenever the setting is off and you have Copilot usage), or run **AI Insights: Enable GitHub Copilot Real Cache Data** from the Command Palette at any time - both trigger the same confirmation dialog.
+- Prefer to do it yourself, or never be asked? Set `github.copilot.chat.agentDebugLog.fileLogging.enabled` directly in `settings.json`, and/or turn off `aiInsights.providers.copilot.promptToEnableRealCacheData` so AI Insights stops asking.
 
 ## Install
 
@@ -86,6 +106,7 @@ code --install-extension ai-insights-0.1.0.vsix
 | `AI Insights: Show Token Usage Dashboard` | Open the main dashboard           |
 | `AI Insights: Show Token Usage Charts`    | Open interactive charts           |
 | `AI Insights: Generate Diagnostic Report` | Generate system diagnostic report |
+| `AI Insights: Enable GitHub Copilot Real Cache Data` | Turn on Copilot's `agentDebugLog.fileLogging` setting for real cache/token data (see [GitHub Copilot: Real Cache/Token Data](#-github-copilot-real-cachetoken-data) above) |
 
 ## Settings
 
@@ -93,9 +114,11 @@ code --install-extension ai-insights-0.1.0.vsix
 | ------------------------------------------ | ------- | ---------------------------- |
 | `aiInsights.display.compactNumbers`        | `true`  | Use K/M suffixes for numbers |
 | `aiInsights.providers.copilot.enabled`     | `true`  | Enable Copilot tracking      |
+| `aiInsights.providers.copilot.promptToEnableRealCacheData` | `true` | One-time prompt offering to enable Copilot's real cache/token telemetry - see above |
 | `aiInsights.providers.antigravity.enabled` | `true`  | Enable Antigravity tracking  |
 | `aiInsights.providers.claudeCode.enabled`  | `true`  | Enable Claude Code tracking  |
 | `aiInsights.providers.codex.enabled`       | `true`  | Enable Codex tracking        |
+| `aiInsights.providers.<provider>.additionalSessionPaths` | `[]` | Extra folders to scan for that provider's sessions, for non-standard storage locations (moved home dir, synced backup, remote mount, etc.). Available for every provider - see the ⚙️ Settings panel (`AI Insights: Show Diagnostics`) for the full editable list with per-provider descriptions. |
 | `aiInsights.refreshIntervalMinutes`        | `5`     | Auto-refresh interval        |
 
 ## Status Bar

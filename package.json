@@ -2,7 +2,7 @@
   "name": "ai-insights",
   "displayName": "AI Insights - Token Tracker",
   "description": "Track token usage, costs, and AI metrics across GitHub Copilot, Antigravity, Claude Code, and Codex.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "publisher": "thewalking-dev",
   "license": "MIT",
   "icon": "assets/logo.png",
@@ -104,10 +104,21 @@
         "icon": "$(beaker)"
       },
       {
+        "command": "aiInsights.showAbTest",
+        "title": "A/B Test Prompts Across Providers",
+        "category": "AI Insights",
+        "icon": "$(diff-multiple)"
+      },
+      {
         "command": "aiInsights.showClaudeAccount",
         "title": "Show Claude & Rate Limits",
         "category": "AI Insights",
         "icon": "$(key)"
+      },
+      {
+        "command": "aiInsights.enableCopilotRealCacheData",
+        "title": "Enable GitHub Copilot Real Cache Data",
+        "category": "AI Insights"
       },
       {
         "command": "aiInsights.changeTokenModel",
@@ -181,10 +192,30 @@
         },
         "aiInsights.providers.copilot.inputTokenMultiplier": {
           "type": "number",
-          "default": 1.0,
+          "default": 1,
           "minimum": 0.1,
           "maximum": 20,
           "description": "Multiplier applied to estimated input tokens for Copilot sessions that don't have real token counts (JSON session files). The VS Code native credit tracker counts the full context — system prompt, agent instructions, workspace info, tool results — which Copilot's JSON logs don't expose. Agent-mode sessions typically have 5–15× more input tokens than the raw user message alone. JSONL sessions are unaffected when they contain real promptTokens."
+        },
+        "aiInsights.providers.copilot.cacheEstimation.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Estimate GitHub Copilot cache-read and cache-write tokens via turn-over-turn context diffing, used only for interactions without real telemetry. Real cache/input/output tokens are read automatically from GitHub Copilot's own debug-log telemetry when github.copilot.chat.agentDebugLog.fileLogging.enabled is on (see aiInsights.providers.copilot.promptToEnableRealCacheData) - this estimate is the fallback for everything else. Estimated values are always shown as calculated, never presented as measured data. The cache-write split is lower-confidence than cache-read (it assumes all new context gets cached, which isn't always true). Disable to leave un-telemetered Copilot cache tokens at 0."
+        },
+        "aiInsights.providers.copilot.promptToEnableRealCacheData": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a one-time prompt offering to turn on GitHub Copilot's own github.copilot.chat.agentDebugLog.fileLogging setting, which lets AI Insights read real cache/input/output token counts instead of calculating estimates. Enabling that Copilot setting makes Copilot write your full prompts and code context to local per-session debug-log files (debug-logs/{sessionId}/main.jsonl) that don't otherwise exist - review your own data-handling requirements before accepting. Set to false to never be asked; you can still enable it later via 'AI Insights: Enable GitHub Copilot Real Cache Data' in the Command Palette."
+        },
+        "aiInsights.providers.copilot.cacheEstimation.convention": {
+          "type": "string",
+          "enum": ["inclusive", "exclusive"],
+          "enumDescriptions": [
+            "inputTokens stays as the real reported total; the cache estimates are treated as subsets of it. Keeps cost calculations accurate. Recommended.",
+            "inputTokens is reduced to whatever's left after the cache read/write estimates (often ~0); the cache estimates are additive on top. Matches Claude Code's convention and makes the Cache Efficiency dashboard widget's hit-rate % exact, but can understate cost when the cache estimates exceed fresh tokens."
+          ],
+          "default": "inclusive",
+          "description": "How estimated Copilot cache tokens relate to inputTokens. See aiInsights.providers.copilot.cacheEstimation.enabled."
         },
         "aiInsights.providers.copilot.maxSessionSnapshots": {
           "type": "number",
@@ -193,10 +224,26 @@
           "maximum": 20000,
           "description": "Maximum number of Copilot sessions kept in the persistent snapshot store (survives Copilot deleting/overwriting its own chat files). Oldest snapshots by end time are evicted once this limit is exceeded."
         },
+        "aiInsights.providers.copilot.additionalSessionPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories to scan for GitHub Copilot session files, in addition to the auto-discovered VS Code workspaceStorage/globalStorage locations. Useful when sessions are stored at a non-default location, e.g. a synced backup or a custom VS Code data dir. Supports ~ expansion."
+        },
         "aiInsights.providers.antigravity.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable Antigravity (Gemini) session log tracking."
+        },
+        "aiInsights.providers.antigravity.additionalSessionPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra Antigravity home directories to scan for sessions, in addition to ~/.gemini/antigravity/. Each path should be a folder that itself contains brain/ and conversations/ subfolders (mirroring ~/.gemini/antigravity/), e.g. a second Gemini profile or a synced backup. Supports ~ expansion."
         },
         "aiInsights.providers.claudeCode.enabled": {
           "type": "boolean",
@@ -216,15 +263,39 @@
           "default": true,
           "description": "Enable Codex session log tracking."
         },
+        "aiInsights.providers.codex.additionalSessionPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories to scan for Codex rollout-*.jsonl session files, in addition to $CODEX_HOME/sessions (or ~/.codex/sessions). Useful when sessions are stored at a non-default location. Supports ~ expansion."
+        },
         "aiInsights.providers.jetbrainsAI.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable GitHub Copilot for JetBrains session tracking (reads JSONL partition files from ~/.copilot/jb/). On WSL2 also probes /mnt/c/Users/<name>/.copilot/jb/ so sessions from WebStorm/IntelliJ running on Windows are discovered automatically."
         },
+        "aiInsights.providers.jetbrainsAI.additionalSessionPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra ~/.copilot/jb-style roots to scan for GitHub Copilot for JetBrains session partitions, in addition to the auto-discovered locations. Supports ~ expansion."
+        },
         "aiInsights.providers.visualStudio.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable Visual Studio Copilot Chat session tracking (reads MessagePack session files from .vs/**/copilot-chat/). Also supports WSL2: scans /mnt/c/Users/ automatically."
+        },
+        "aiInsights.providers.visualStudio.additionalSessionPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories to scan for .vs/**/copilot-chat/ session folders, in addition to the auto-discovered dev roots. Useful for repos stored outside the usual locations. Supports ~ expansion."
         },
         "aiInsights.refreshIntervalMinutes": {
           "type": "number",

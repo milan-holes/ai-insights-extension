@@ -8,7 +8,7 @@
   const CHARS_PER_TOKEN = 3.5
   const USD_PER_CREDIT  = 0.01
 
-  // Different providers use different tokenizers — approximate chars/token per family
+  // Different providers use different tokenizers - approximate chars/token per family
   const CHARS_PER_TOKEN_BY_PROVIDER = {
     anthropic: 3.5,  // Claude tokenizer
     openai:    4.0,  // tiktoken cl100k_base / o200k_base
@@ -283,8 +283,8 @@
       const rawPct     = (tokens / ctx) * 100
       const barPct     = Math.min(rawPct, 100)
       const usdCost    = (tokens / 1_000_000) * m.inputCostPerMillion
-      const fillColor = rawPct < 70 ? '#4caf82' : rawPct < 90 ? '#e8a838' : '#e8534a'
-      const track     = 'rgba(110,110,110,0.45)'
+      const fillColor = rawPct < 50 ? 'var(--primary)' : rawPct < 75 ? 'var(--stage-3)' : rawPct < 90 ? 'var(--stage-2)' : 'var(--stage-1)'
+      const track     = 'rgba(255,255,255,0.08)'
       const fillPct   = tokens > 0 ? Math.max(barPct, 1.5) : 0
       const barBg     = fillPct === 0
         ? track
@@ -329,7 +329,7 @@
 
     if (wc < 5)        { issues.push('too short'); score -= 3 }
     else if (wc < 15)  { issues.push('add more context'); score -= 1 }
-    else if (wc > 600) { issues.push('very long — split tasks'); score -= 1 }
+    else if (wc > 600) { issues.push('very long - split tasks'); score -= 1 }
     else               { score += 1 }
 
     if (/^(create|build|add|fix|update|refactor|implement|write|generate|explain|show|find|check|make|remove|delete|convert|help|analyze|review|summarize|list|test)\b/i.test(trimmed) || trimmed.includes('?')) {
@@ -345,7 +345,7 @@
     if (/`[^`]+`|\b\w+\.\w+\(|\b\w+\(\)/.test(trimmed)) { goods.push('references code'); score += 2 }
 
     if ((lc.match(/\b(also|additionally|and then|another thing)\b/g) || []).length >= 2) {
-      issues.push('multiple tasks — split up'); score -= 1
+      issues.push('multiple tasks - split up'); score -= 1
     }
 
     if (selectedPaths.size > 0) {

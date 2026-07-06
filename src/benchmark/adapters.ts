@@ -37,7 +37,7 @@ export interface BenchmarkAdapter {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function estimateTokens(text: string): number {
+export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
@@ -68,8 +68,14 @@ async function findClaudeBin(): Promise<string | null> {
 
 export class ClaudeCodeCliAdapter implements BenchmarkAdapter {
   readonly id = 'claude-code-cli';
-  readonly name = 'Claude Code (CLI)';
+  readonly name: string;
   private claudeBin: string | null = null;
+  private readonly model?: string;
+
+  constructor(model?: string) {
+    this.model = model;
+    this.name = model ? `Claude Code — ${model}` : 'Claude Code (CLI)';
+  }
 
   async isAvailable(): Promise<{ available: boolean; reason?: string }> {
     this.claudeBin = await findClaudeBin();
@@ -103,6 +109,9 @@ export class ClaudeCodeCliAdapter implements BenchmarkAdapter {
     const args = ['-p', fullPrompt];
     if (opts.systemPrompt.trim()) {
       args.push('--append-system-prompt', opts.systemPrompt);
+    }
+    if (this.model) {
+      args.push('--model', this.model);
     }
 
     // Use spawn (not exec) so we can stream stdout chunks for live display
@@ -196,6 +205,146 @@ function readNewSessionTokens(dir: string, before: Map<string, number>): Session
   } catch { return null; }
 }
 
+// ── 1b. Codex CLI adapter ──────────────────────────────────────────────────────
+//
+// Uses `codex exec` (Codex's scripted/non-interactive mode) run inside the
+// worktree so AGENTS.md is picked up automatically. `codex exec` is sandboxed
+// and does not stop for approvals, matching `claude -p`'s non-interactive
+// behavior. Output is requested as JSONL (`--json`) so token usage can be
+// read from the event stream; falls back to raw stdout + estimated tokens
+// if the event schema doesn't match (older/newer CLI versions).
+
+const CODEX_BIN_CANDIDATES = [
+  'codex',
+  path.join(os.homedir(), '.local', 'bin', 'codex'),
+  '/usr/local/bin/codex',
+  '/opt/homebrew/bin/codex',
+];
+
+async function findCodexBin(): Promise<string | null> {
+  for (const bin of CODEX_BIN_CANDIDATES) {
+    const found = await new Promise<boolean>(resolve => {
+      cp.exec(`"${bin}" --version`, (err) => resolve(!err));
+    });
+    if (found) { return bin; }
+  }
+  return null;
+}
+
+export class CodexCliAdapter implements BenchmarkAdapter {
+  readonly id = 'codex-cli';
+  readonly name: string;
+  private codexBin: string | null = null;
+  private readonly model?: string;
+
+  constructor(model?: string) {
+    this.model = model;
+    this.name = model ? `Codex — ${model}` : 'Codex (CLI)';
+  }
+
+  async isAvailable(): Promise<{ available: boolean; reason?: string }> {
+    this.codexBin = await findCodexBin();
+    if (!this.codexBin) {
+      return {
+        available: false,
+        reason: 'codex CLI not found in PATH. If installed, try launching VS Code from the terminal: code .',
+      };
+    }
+    return { available: true };
+  }
+
+  async run(opts: AdapterRunOptions): Promise<AdapterResult> {
+    const bin = this.codexBin ?? (await findCodexBin()) ?? 'codex';
+    const start = Date.now();
+
+    let fullPrompt = opts.systemPrompt.trim()
+      ? `${opts.systemPrompt}\n\n---\n\n${opts.userPrompt}`
+      : opts.userPrompt;
+    if (opts.history.length > 0) {
+      const historyText = opts.history
+        .map(m => `[${m.role.toUpperCase()}]: ${m.content}`)
+        .join('\n');
+      fullPrompt = `Context from prior conversation:\n${historyText}\n\n---\n\n${fullPrompt}`;
+    }
+
+    const args = ['exec', '--json'];
+    if (this.model) { args.push('-m', this.model); }
+    args.push(fullPrompt);
+
+    const rawOutput = await new Promise<string>((resolve, reject) => {
+      const child = cp.spawn(bin, args, {
+        cwd: opts.worktreePath,
+        env: { ...process.env },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        opts.onChunk?.(text);
+      });
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.on('close', (code) => {
+        if (code === 0) { resolve(stdout); }
+        else { reject(new Error(stderr.trim() || `codex exited with code ${code}`)); }
+      });
+      child.on('error', reject);
+    });
+
+    const wallTimeMs = Date.now() - start;
+    const parsed = parseCodexJsonlOutput(rawOutput);
+
+    return {
+      response: parsed?.response ?? rawOutput.trim(),
+      inputTokens: parsed?.inputTokens ?? estimateTokens(fullPrompt),
+      outputTokens: parsed?.outputTokens ?? estimateTokens(parsed?.response ?? rawOutput),
+      cacheCreationTokens: 0,
+      cacheReadTokens: parsed?.cacheReadTokens ?? 0,
+      tokenSource: parsed?.inputTokens != null ? 'api' : 'estimated',
+      ttftMs: -1,
+      wallTimeMs,
+    };
+  }
+}
+
+function parseCodexJsonlOutput(raw: string): { response: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number } | null {
+  const lines = raw.split('\n').filter(Boolean);
+  const messageParts: string[] = [];
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let cacheReadTokens: number | undefined;
+  let sawJson = false;
+
+  for (const line of lines) {
+    let entry: any;
+    try { entry = JSON.parse(line); } catch { continue; }
+    sawJson = true;
+
+    const msg = entry.msg ?? entry;
+    const type = msg?.type ?? entry.type;
+    if (type === 'agent_message' && typeof msg.message === 'string') {
+      messageParts.push(msg.message);
+    } else if (typeof msg?.text === 'string' && (type === 'agent_message_delta' || type === 'item.completed')) {
+      messageParts.push(msg.text);
+    }
+
+    const usage = entry.usage ?? msg?.usage ?? (type === 'token_count' ? msg : undefined);
+    if (usage) {
+      inputTokens = usage.input_tokens ?? usage.inputTokens ?? inputTokens;
+      outputTokens = usage.output_tokens ?? usage.outputTokens ?? outputTokens;
+      cacheReadTokens = usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? cacheReadTokens;
+    }
+  }
+
+  if (!sawJson) { return null; }
+  return {
+    response: messageParts.join('\n').trim(),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+  };
+}
+
 // ── 2. GitHub Copilot adapter (vscode.lm) ─────────────────────────────────────
 //
 // Uses VS Code's Language Model API — no API key needed, uses the user's
@@ -280,7 +429,7 @@ export class CopilotAdapter implements BenchmarkAdapter {
   }
 }
 
-async function resolveCopilotModel(modelId: string): Promise<vscode.LanguageModelChat | undefined> {
+export async function resolveCopilotModel(modelId: string): Promise<vscode.LanguageModelChat | undefined> {
   const exact = await vscode.lm.selectChatModels({ vendor: 'copilot', id: modelId });
   if (exact.length) { return exact[0]; }
 

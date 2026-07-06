@@ -1,10 +1,11 @@
+/* Design tokens (:root) are injected by tokenCalculator.ts from src/webview/designSystem.ts */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
-  color: var(--vscode-foreground);
-  background: var(--vscode-editor-background);
+  font-family: var(--font-primary);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-base);
   padding: 16px;
   height: 100vh;
   display: flex;
@@ -22,12 +23,12 @@ body {
 .tc-title {
   font-size: 1.3em;
   font-weight: 600;
-  color: var(--vscode-foreground);
+  color: var(--text-primary);
 }
 
 .tc-subtitle {
   font-size: 0.85em;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
 }
 
 .tc-layout {
@@ -58,7 +59,7 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 
@@ -73,9 +74,9 @@ body {
 
 .tc-search {
   flex: 1;
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
-  color: var(--vscode-input-foreground);
+  background: var(--bg-surface-high);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
   padding: 4px 8px;
   border-radius: 3px;
   font-size: inherit;
@@ -84,12 +85,12 @@ body {
 }
 
 .tc-search:focus {
-  border-color: var(--vscode-focusBorder);
+  border-color: var(--primary);
 }
 
 .tc-btn {
-  background: var(--vscode-button-secondaryBackground);
-  color: var(--vscode-button-secondaryForeground);
+  background: var(--bg-surface-high);
+  color: var(--text-secondary);
   border: none;
   padding: 4px 10px;
   border-radius: 3px;
@@ -100,29 +101,29 @@ body {
 }
 
 .tc-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground);
+  background: var(--bg-surface);
 }
 
 .tc-btn-open {
-  border: 1px solid var(--vscode-focusBorder, rgba(128,128,128,0.4));
+  border: 1px solid var(--primary);
 }
 
 .tc-btn-open:hover {
-  border-color: var(--vscode-focusBorder, rgba(128,128,128,0.7));
+  border-color: var(--primary);
 }
 
 .tc-file-list {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, #333));
+  border: 1px solid var(--border);
   border-radius: 3px;
-  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  background: var(--bg-surface);
   padding: 4px 0;
 }
 
 .tc-empty {
   padding: 12px;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   font-style: italic;
   font-size: 0.9em;
 }
@@ -140,26 +141,26 @@ body {
 }
 
 .tc-tree-row:hover {
-  background: var(--vscode-list-hoverBackground);
+  background: rgba(255,255,255,0.04);
 }
 
 .tc-tree-file.tc-sel {
-  background: var(--vscode-list-activeSelectionBackground);
-  color: var(--vscode-list-activeSelectionForeground);
+  background: rgba(0,122,255,0.18);
+  color: var(--text-primary);
 }
 
 .tc-tree-file.tc-sel .tc-file-tokens {
-  color: var(--vscode-list-activeSelectionForeground);
+  color: var(--text-primary);
   background: rgba(255,255,255,0.12);
 }
 
 .tc-tree-row input[type="checkbox"] {
   flex-shrink: 0;
-  accent-color: var(--vscode-checkbox-selectBorder, var(--vscode-focusBorder));
+  accent-color: var(--primary);
   cursor: pointer;
 }
 
-/* indent guide line — spans full row height */
+/* indent guide line - spans full row height */
 .tc-guide {
   width: 14px;
   flex-shrink: 0;
@@ -174,7 +175,7 @@ body {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--vscode-tree-indentGuidesStroke, rgba(128,128,128,0.2));
+  background: var(--border);
 }
 
 /* spacer where the arrow sits for file rows */
@@ -187,7 +188,7 @@ body {
   width: 14px;
   flex-shrink: 0;
   text-align: center;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   font-size: 1.1em;
   display: inline-block;
   transition: transform 0.15s ease;
@@ -202,7 +203,7 @@ body {
 
 .tc-dir-name {
   font-size: 0.86em;
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--font-data);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -215,7 +216,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--font-data);
   flex: 1;
   opacity: 0.9;
 }
@@ -223,9 +224,9 @@ body {
 .tc-file-tokens {
   flex-shrink: 0;
   font-size: 0.72em;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-descriptionForeground);
-  background: var(--vscode-badge-background, rgba(128,128,128,0.14));
+  font-family: var(--font-data);
+  color: var(--text-secondary);
+  background: var(--bg-surface-high);
   border-radius: 10px;
   padding: 1px 6px;
   line-height: 1.6;
@@ -242,20 +243,20 @@ body {
 .tc-prompt {
   flex: 1;
   resize: none;
-  background: var(--vscode-input-background);
-  border: 1px solid var(--vscode-input-border, transparent);
-  color: var(--vscode-input-foreground);
+  background: var(--bg-surface-high);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
   padding: 8px;
   border-radius: 3px;
   font-size: inherit;
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--font-data);
   outline: none;
   min-height: 120px;
   max-height: 220px;
 }
 
 .tc-prompt:focus {
-  border-color: var(--vscode-focusBorder);
+  border-color: var(--primary);
 }
 
 /* ── Prompt quality ──────────────────────────────────────── */
@@ -276,19 +277,19 @@ body {
   flex-shrink: 0;
 }
 
-.tc-pq-dot.pq-good { background: #4caf82; }
-.tc-pq-dot.pq-fair { background: #e8a838; }
-.tc-pq-dot.pq-weak { background: #c8882a; }
-.tc-pq-dot.pq-poor { background: #e8534a; }
+.tc-pq-dot.pq-good { background: var(--success); }
+.tc-pq-dot.pq-fair { background: var(--warning); }
+.tc-pq-dot.pq-weak { background: var(--stage-2); }
+.tc-pq-dot.pq-poor { background: var(--danger); }
 
 .tc-pq-label { font-weight: 600; }
-.tc-pq-label.pq-good { color: #4caf82; }
-.tc-pq-label.pq-fair { color: #e8a838; }
-.tc-pq-label.pq-weak { color: #c8882a; }
-.tc-pq-label.pq-poor { color: #e8534a; }
+.tc-pq-label.pq-good { color: var(--success); }
+.tc-pq-label.pq-fair { color: var(--warning); }
+.tc-pq-label.pq-weak { color: var(--stage-2); }
+.tc-pq-label.pq-poor { color: var(--danger); }
 
-.tc-pq-sep  { color: var(--vscode-descriptionForeground); opacity: 0.4; }
-.tc-pq-tips { color: var(--vscode-descriptionForeground); }
+.tc-pq-sep  { color: var(--text-secondary); opacity: 0.4; }
+.tc-pq-tips { color: var(--text-secondary); }
 
 /* ── Provider switcher ───────────────────────────────────── */
 
@@ -300,8 +301,8 @@ body {
 }
 
 .tc-sw-btn {
-  background: var(--vscode-button-secondaryBackground);
-  color: var(--vscode-button-secondaryForeground);
+  background: var(--bg-surface-high);
+  color: var(--text-secondary);
   border: 1px solid transparent;
   padding: 3px 11px;
   border-radius: 12px;
@@ -313,13 +314,13 @@ body {
 }
 
 .tc-sw-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground);
+  background: var(--bg-surface);
 }
 
 .tc-sw-btn.active {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-  border-color: var(--vscode-focusBorder, transparent);
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
 }
 
 /* ── Model rows ──────────────────────────────────────────── */
@@ -345,8 +346,8 @@ body {
 
 .tc-model-name {
   font-size: 0.92em;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-foreground);
+  font-family: var(--font-data);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -374,17 +375,17 @@ body {
 
 .tc-ctx-pct {
   font-size: 0.85em;
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--font-data);
   width: 50px;
   text-align: right;
   flex-shrink: 0;
   font-weight: 500;
 }
 
-.tc-ctx-zero { color: var(--vscode-descriptionForeground); }
-.tc-ctx-ok   { color: #4caf82; }
-.tc-ctx-warn { color: #e8a838; }
-.tc-ctx-crit { color: #e8534a; font-weight: 600; }
+.tc-ctx-zero { color: var(--text-secondary); }
+.tc-ctx-ok   { color: var(--success); }
+.tc-ctx-warn { color: var(--warning); }
+.tc-ctx-crit { color: var(--danger); font-weight: 600; }
 
 /* token cell: total + per-source breakdown */
 .tc-tok-cell {
@@ -396,8 +397,8 @@ body {
 
 .tc-tok-total {
   font-size: 0.88em;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-foreground);
+  font-family: var(--font-data);
+  color: var(--text-primary);
   font-weight: 500;
 }
 
@@ -405,22 +406,22 @@ body {
   display: flex;
   gap: 5px;
   font-size: 0.75em;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-descriptionForeground);
+  font-family: var(--font-data);
+  color: var(--text-secondary);
   opacity: 0.85;
 }
 
 .tc-model-credits {
   font-size: 0.86em;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: #d4a843;
+  font-family: var(--font-data);
+  color: var(--warning);
   text-align: right;
 }
 
 .tc-model-cost {
   font-size: 0.86em;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-descriptionForeground);
+  font-family: var(--font-data);
+  color: var(--text-secondary);
   text-align: right;
 }
 
@@ -430,7 +431,7 @@ body {
   gap: 10px;
   margin-bottom: 3px;
   padding-bottom: 4px;
-  border-bottom: 1px solid var(--vscode-panel-border, #333);
+  border-bottom: 1px solid var(--border);
 }
 
 .tc-col-header.has-credits {
@@ -443,7 +444,7 @@ body {
 
 .tc-col-lbl {
   font-size: 0.75em;
-  color: var(--vscode-descriptionForeground);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   text-align: right;

@@ -9,51 +9,65 @@ import * as os from 'os';
 import { BaseProvider } from './base';
 import { Session, Interaction } from '../types';
 import { calculateCost } from '../core/costEstimation';
+import { extractContextRefs } from '../core/contextReferences';
+
+interface AntigravityRoot { brainDir: string; conversationsDir: string; }
 
 export class AntigravityProvider extends BaseProvider {
   readonly id = 'antigravity' as const;
   readonly displayName = 'Antigravity';
   private readonly brainDir: string;
   private readonly conversationsDir: string;
+  private readonly roots: AntigravityRoot[];
 
-  constructor() {
+  constructor(additionalPaths: string[] = []) {
     super();
     this.brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
     this.conversationsDir = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations');
+    this.roots = [
+      { brainDir: this.brainDir, conversationsDir: this.conversationsDir },
+      ...additionalPaths.map(p => this.expandHome(p)).map(root => ({
+        brainDir: path.join(root, 'brain'),
+        conversationsDir: path.join(root, 'conversations'),
+      })),
+    ];
   }
 
-  getSessionDirectories(): string[] { return [this.brainDir, this.conversationsDir]; }
+  getSessionDirectories(): string[] { return this.roots.flatMap(r => [r.brainDir, r.conversationsDir]); }
 
   async discoverSessionFiles(): Promise<string[]> {
     const files: string[] = [];
-    const seenIds = new Set<string>();
 
-    // Primary source: conversations/*.pb (covers all sessions including old ones)
-    try {
-      if (fs.existsSync(this.conversationsDir)) {
-        const entries = fs.readdirSync(this.conversationsDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.name.endsWith('.pb')) { continue; }
-          const id = entry.name.replace('.pb', '');
-          seenIds.add(id);
-          // Prefer overview.txt (accurate token data) when available
-          const overviewPath = path.join(this.brainDir, id, '.system_generated', 'logs', 'overview.txt');
-          files.push(fs.existsSync(overviewPath) ? overviewPath : path.join(this.conversationsDir, entry.name));
-        }
-      }
-    } catch { /* skip */ }
+    for (const root of this.roots) {
+      const seenIds = new Set<string>();
 
-    // Also pick up brain sessions that have no .pb counterpart
-    try {
-      if (fs.existsSync(this.brainDir)) {
-        const dirs = fs.readdirSync(this.brainDir, { withFileTypes: true });
-        for (const dir of dirs) {
-          if (!dir.isDirectory() || seenIds.has(dir.name)) { continue; }
-          const overviewPath = path.join(this.brainDir, dir.name, '.system_generated', 'logs', 'overview.txt');
-          if (fs.existsSync(overviewPath)) { files.push(overviewPath); }
+      // Primary source: conversations/*.pb (covers all sessions including old ones)
+      try {
+        if (fs.existsSync(root.conversationsDir)) {
+          const entries = fs.readdirSync(root.conversationsDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.name.endsWith('.pb')) { continue; }
+            const id = entry.name.replace('.pb', '');
+            seenIds.add(id);
+            // Prefer overview.txt (accurate token data) when available
+            const overviewPath = path.join(root.brainDir, id, '.system_generated', 'logs', 'overview.txt');
+            files.push(fs.existsSync(overviewPath) ? overviewPath : path.join(root.conversationsDir, entry.name));
+          }
         }
-      }
-    } catch { /* skip */ }
+      } catch { /* skip */ }
+
+      // Also pick up brain sessions that have no .pb counterpart
+      try {
+        if (fs.existsSync(root.brainDir)) {
+          const dirs = fs.readdirSync(root.brainDir, { withFileTypes: true });
+          for (const dir of dirs) {
+            if (!dir.isDirectory() || seenIds.has(dir.name)) { continue; }
+            const overviewPath = path.join(root.brainDir, dir.name, '.system_generated', 'logs', 'overview.txt');
+            if (fs.existsSync(overviewPath)) { files.push(overviewPath); }
+          }
+        }
+      } catch { /* skip */ }
+    }
 
     return files;
   }
@@ -65,16 +79,24 @@ export class AntigravityProvider extends BaseProvider {
     return this.parseOverviewSession(filePath);
   }
 
+  // A .pb file always lives at <root>/conversations/<id>.pb, so its sibling brain root
+  // (<root>/brain) can be derived from the file path itself - this keeps parsing correct
+  // even when the file came from an additional (non-default) Antigravity root.
+  private rootBrainDirFor(filePath: string): string {
+    return path.join(path.dirname(path.dirname(filePath)), 'brain');
+  }
+
   // Parse sessions where we only have a binary .pb file (older sessions without overview.txt).
   // Token counts are estimated from file size; dates come from brain metadata.json or file mtime.
   private parsePbSession(filePath: string): Session | null {
     try {
       const id = path.basename(filePath, '.pb');
       const stat = fs.statSync(filePath);
+      const rootBrainDir = this.rootBrainDirFor(filePath);
 
       // Look for the earliest metadata.json updatedAt across brain artifacts
       let sessionTime: Date = stat.mtime;
-      const brainDir = path.join(this.brainDir, id);
+      const brainDir = path.join(rootBrainDir, id);
       if (fs.existsSync(brainDir)) {
         try {
           const brainEntries = fs.readdirSync(brainDir);
@@ -124,17 +146,17 @@ export class AntigravityProvider extends BaseProvider {
         totalCacheReadTokens: 0,
         totalCacheWriteTokens: 0,
         models: ['gemini'],
-        workspace: this.extractWorkspaceFromBrain(id) || id.substring(0, 8),
+        workspace: this.extractWorkspaceFromBrain(rootBrainDir, id) || id.substring(0, 8),
         sourceFile: filePath,
-        title: this.extractTitleFromBrain(id),
+        title: this.extractTitleFromBrain(rootBrainDir, id),
         estimatedCostUsd: calculateCost('gemini', estimatedInput, estimatedOutput, 0, 0),
       };
     } catch { return null; }
   }
 
-  private extractWorkspaceFromBrain(id: string): string | null {
+  private extractWorkspaceFromBrain(brainDir: string, id: string): string | null {
     try {
-      const taskPath = path.join(this.brainDir, id, 'task.md');
+      const taskPath = path.join(brainDir, id, 'task.md');
       if (!fs.existsSync(taskPath)) { return null; }
       const content = fs.readFileSync(taskPath, 'utf-8');
       const match = content.match(/Active Document:\s*(\/[^\s(]+)/);
@@ -151,11 +173,11 @@ export class AntigravityProvider extends BaseProvider {
     return null;
   }
 
-  private extractTitleFromBrain(id: string): string | undefined {
+  private extractTitleFromBrain(brainDir: string, id: string): string | undefined {
     try {
       const metaFiles = ['task.md.metadata.json', 'walkthrough.md.metadata.json'];
       for (const mf of metaFiles) {
-        const p = path.join(this.brainDir, id, mf);
+        const p = path.join(brainDir, id, mf);
         if (!fs.existsSync(p)) { continue; }
         const meta = JSON.parse(fs.readFileSync(p, 'utf-8'));
         if (meta.summary) { return String(meta.summary).substring(0, 80); }
@@ -229,6 +251,7 @@ export class AntigravityProvider extends BaseProvider {
     let endTime: Date | null = null;
     let title: string | undefined;
     let totalTokensEstimate = 0;
+    let pendingUserContent: string | undefined;
 
     for (const line of content.split('\n')) {
       if (!line.trim()) { continue; }
@@ -239,10 +262,13 @@ export class AntigravityProvider extends BaseProvider {
           if (!startTime) { startTime = ts; }
           endTime = ts;
         }
-        if (!title && entry.type === 'USER_INPUT' && typeof entry.content === 'string') {
+        if (entry.type === 'USER_INPUT' && typeof entry.content === 'string') {
           const raw = entry.content.replace(/<[^>]+>/g, '').trim();
-          const firstLine = raw.split('\n').find((l: string) => l.trim().length > 5);
-          if (firstLine) { title = firstLine.trim().substring(0, 80); }
+          pendingUserContent = raw;
+          if (!title) {
+            const firstLine = raw.split('\n').find((l: string) => l.trim().length > 5);
+            if (firstLine) { title = firstLine.trim().substring(0, 80); }
+          }
         }
         if (typeof entry.input_tokens === 'number' || typeof entry.output_tokens === 'number') {
           const inputTokens = entry.input_tokens || 0;
@@ -256,7 +282,9 @@ export class AntigravityProvider extends BaseProvider {
             totalTokens: inputTokens + outputTokens,
             effectiveContextTokens: inputTokens,
             mode: 'chat', toolCalls: [],
+            contextRefs: extractContextRefs(pendingUserContent),
           });
+          pendingUserContent = undefined;
         } else {
           totalTokensEstimate += this.estimateTokens(JSON.stringify(entry), 0.24);
         }
@@ -266,13 +294,21 @@ export class AntigravityProvider extends BaseProvider {
     if (interactions.length === 0) {
       const fileStat = (() => { try { return fs.statSync(filePath); } catch { return null; } })();
       const fallbackEnd = fileStat?.mtime || new Date();
+      // Prefer the real timestamp span seen above (from entry.created_at) over the file's
+      // mtime alone - without this, every synthetic turn below gets the exact same
+      // timestamp, so a multi-day session gets all of its tokens counted on a single day.
+      const spanStart = startTime || fallbackEnd;
+      const spanEnd = endTime || fallbackEnd;
       const totalEst = totalTokensEstimate || this.estimateTokens(content, 0.24);
       if (totalEst >= 10) {
         const turnCount = Math.max(1, (content.match(/(?:^|\n)(?:USER|User|user|MODEL|model|Assistant)[:>]/gim) || []).length / 2);
         const tokensPerTurn = Math.round(totalEst / turnCount);
+        const spanMs = spanEnd.getTime() - spanStart.getTime();
         for (let i = 0; i < turnCount; i++) {
+          const frac = turnCount > 1 ? i / (turnCount - 1) : 0;
+          const timestamp = spanMs > 0 ? new Date(spanStart.getTime() + frac * spanMs) : fallbackEnd;
           interactions.push({
-            timestamp: fallbackEnd, model: 'gemini',
+            timestamp, model: 'gemini',
             inputTokens: Math.round(tokensPerTurn * 0.3),
             outputTokens: Math.round(tokensPerTurn * 0.7),
             thinkingTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,

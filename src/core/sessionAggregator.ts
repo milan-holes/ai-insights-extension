@@ -12,6 +12,8 @@ import {
   computeAnomalyFlags,
   computeSessionComplexity,
 } from './budgetManager';
+import { computeContextEngagement } from './contextReferences';
+import { computeSessionHygieneSummary } from './sessionHygiene';
 
 /**
  * Returns copies of sessions containing only the interactions that fall within
@@ -139,6 +141,8 @@ export function aggregateSessions(sessions: Session[], config: AggregationConfig
   const roi = computeROIMetrics(currentMonthMetrics, byProvider);
   const anomaly = computeAnomalyFlags(now, sessions, daily, config);
   const sessionComplexity = computeSessionComplexity(sessions, config);
+  const contextEngagement = computeContextEngagement(sessions);
+  const sessionHygiene = computeSessionHygieneSummary(sessions);
 
   return {
     today: todayMetrics,
@@ -161,6 +165,8 @@ export function aggregateSessions(sessions: Session[], config: AggregationConfig
     roi,
     anomaly,
     sessionComplexity,
+    contextEngagement,
+    sessionHygiene,
   };
 }
 
@@ -185,6 +191,7 @@ function buildMetrics(sessions: Session[]): ProviderMetrics {
   const thinkingTokens = sessions.reduce((s, sess) => s + sess.totalThinkingTokens, 0);
   const cacheReadTokens = sessions.reduce((s, sess) => s + sess.totalCacheReadTokens, 0);
   const cacheWriteTokens = sessions.reduce((s, sess) => s + sess.totalCacheWriteTokens, 0);
+  const cacheTokensEstimated = sessions.some(sess => sess.cacheTokensEstimated);
   const totalInteractions = sessions.reduce((s, sess) => s + sess.interactions.length, 0);
 
   let cost = 0;
@@ -273,7 +280,7 @@ function buildMetrics(sessions: Session[]): ProviderMetrics {
 
   return {
     totalTokens, inputTokens, outputTokens, thinkingTokens,
-    cacheReadTokens, cacheWriteTokens, cacheSavingsUsd,
+    cacheReadTokens, cacheWriteTokens, cacheSavingsUsd, cacheTokensEstimated,
     sessions: sessions.length, interactions: totalInteractions,
     averageTokensPerSession: sessions.length > 0 ? Math.round(totalTokens / sessions.length) : 0,
     averageInteractionsPerSession: sessions.length > 0 ? Math.round(totalInteractions / sessions.length) : 0,
@@ -307,7 +314,7 @@ function buildDailyUsage(sessions: Session[]): DailyUsage[] {
           totalTokens: 0, inputTokens: 0, outputTokens: 0,
           thinkingTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
           sessions: 0, interactions: 0, estimatedCost: 0,
-          models: {}, toolCalls: {}, repositories: {},
+          models: {}, toolCalls: {}, repositories: {}, contextRefs: {},
         };
         byDay.set(dateStr, day);
       }
@@ -324,6 +331,11 @@ function buildDailyUsage(sessions: Session[]): DailyUsage[] {
       day.estimatedCost += calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens);
       for (const t of i.toolCalls) {
         day.toolCalls[t] = (day.toolCalls[t] || 0) + 1;
+      }
+      if (i.contextRefs) {
+        for (const [type, count] of Object.entries(i.contextRefs)) {
+          day.contextRefs[type] = (day.contextRefs[type] || 0) + count;
+        }
       }
     }
 
