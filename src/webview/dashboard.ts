@@ -4,6 +4,7 @@
 import * as vscode from 'vscode';
 import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics, DiffMetrics, DailyUsage } from '../types';
 import { ConnectedGitHubUser } from '../core/githubAuth';
+import { CopilotQuotaView } from '../core/copilotQuota';
 import { UsageHealthScore } from '../core/usageHealthScore';
 import { Insight } from '../core/insightsEngine';
 import { computeCacheMetrics } from '../core/budgetManager';
@@ -252,7 +253,7 @@ function buildActivityHeatmapHtml(daily: DailyUsage[]): string {
   }).join('');
 
   // Rows 1-7: a day-of-week label + one cell per week column, in grid row-major order.
-  const dayRowLabels = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+  const dayRowLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   let dayRowsHtml = '';
   for (let row = 0; row < 7; row++) {
     dayRowsHtml += `<div style="font-size:9px;color:var(--text-secondary);display:flex;align-items:center;">${dayRowLabels[row]}</div>`;
@@ -311,12 +312,12 @@ export class DashboardProvider {
     DashboardProvider.currentPanel?.webview.postMessage({ type: 'sharingError', error });
   }
 
-  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = []): vscode.WebviewPanel {
+  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = [], copilotQuota?: CopilotQuotaView): vscode.WebviewPanel {
     const logoPath = vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png');
 
     if (DashboardProvider.currentPanel) {
       const logoUri = DashboardProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights);
+      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights, copilotQuota);
       DashboardProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return DashboardProvider.currentPanel;
     }
@@ -332,7 +333,7 @@ export class DashboardProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights);
+    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights, copilotQuota);
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -426,7 +427,7 @@ export class DashboardProvider {
     }
   }
 
-  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = []): string {
+  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = [], copilotQuota?: CopilotQuotaView): string {
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' :
       n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : n.toString();
     const fmtCost = (n: number) => '$' + n.toFixed(4);
@@ -555,6 +556,12 @@ export class DashboardProvider {
       const mon = m.currentMonthByProvider[id];
       const lmo = m.lastMonthByProvider[id];
       return `
+        ${(id === 'copilot' && copilotQuota) ? `<div class="card" style="border-top:2px solid ${copilotQuota.isOverQuota ? '#f38ba8' : copilotQuota.percentRemaining < 20 ? '#f9e2af' : 'var(--primary)'}">
+          <div class="card-label">Copilot Quota Remaining</div>
+          <div class="card-value data-text">${copilotQuota.unlimited ? 'Unlimited' : `${fmt(copilotQuota.remaining)}/${fmt(copilotQuota.entitlement)}`}</div>
+          <div class="card-sub">${copilotQuota.unlimited ? copilotQuota.planLabel : (copilotQuota.isOverQuota ? `Over by ${fmt(copilotQuota.overageAmount)}` : `${copilotQuota.percentRemaining}% left`)} · resets ${copilotQuota.resetDays}d ${copilotQuota.resetHours}h</div>
+          ${copilotQuota.daysUntilExhaustion !== null ? `<div class="card-sub" style="margin-top:6px">~${copilotQuota.daysUntilExhaustion}d until exhausted at current pace</div>` : ''}
+        </div>` : ''}
         ${id === 'copilot' ? `<div class="card" style="border-top:2px solid var(--text-secondary)">
           <div class="card-label">AI Credits This Month</div>
           <div class="card-value data-text">${fmtCredits(mon.estimatedCost)}</div>
@@ -970,7 +977,9 @@ export class DashboardProvider {
     <div style="width:36px;height:36px;border:3px solid rgba(0,122,255,0.25);border-top-color:#007AFF;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
     <div id="navOverlayText" style="color:#6db3ff;font-size:13px;font-weight:500;letter-spacing:0.2px;"></div>
   </div>
-  ${navTopbarHtml(logoUri, true, refreshing, '<button id="btnShare" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">⬆ Share</button>')}
+  ${navTopbarHtml(logoUri, true, refreshing,
+    (githubUser ? '' : '<button id="btnConnectGithub" onclick="window.vscode.postMessage({command:\'connectGitHub\'})" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">🐙 Connect GitHub</button>')
+    + '<button id="btnShare" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">⬆ Share</button>')}
   ${refreshing ? '<div class="loading-bar"><div class="loading-bar-fill"></div></div><div class="loading-banner"><div class="loading-spinner"></div>Refreshing dashboard…</div>' : ''}
   ${navPagebarHtml('overview', 'Dashboard')}
   ${navFilterbarHtml()}
@@ -1434,7 +1443,15 @@ export class DashboardProvider {
     </p>
   </div>
 
-  ${githubUser ? '<button class="copilot-pill" onclick="window.vscode.postMessage({command:\'showPricing\'})">🐙 ' + fmtCredits(copilotMonth.estimatedCost) + ' credits · ' + githubUser.login + '</button>' : ''}
+  ${(() => {
+    if (!githubUser) { return ''; }
+    const quotaLabel = !copilotQuota ? ''
+      : copilotQuota.unlimited ? ' · unlimited quota'
+      : copilotQuota.isOverQuota ? ' · over quota'
+      : ` · ${Math.round(copilotQuota.percentUsed)}% quota used`;
+    return '<button class="copilot-pill" onclick="window.vscode.postMessage({command:\'showPricing\'})">🐙 '
+      + fmtCredits(copilotMonth.estimatedCost) + ' credits · ' + githubUser.login + quotaLabel + '</button>';
+  })()}
   <div class="footer">AI Insights · Token usage is tracked locally. ${githubUser ? '1 GitHub Copilot AI credit = $0.01 USD.' : 'Connect GitHub Copilot to see budget tracking.'}</div>
   </div><!-- /ns-content -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>

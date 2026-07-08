@@ -87,16 +87,23 @@ export async function connectGitHubAndDetectPlan(): Promise<ConnectedGitHubUser 
   return { login: user.login, planName, monthlyBudgetUsd: budget };
 }
 
-export async function getGitHubAccessToken(options: { forceNewSession?: boolean } = {}): Promise<string | undefined> {
+export async function getGitHubAccessToken(
+  options: { forceNewSession?: boolean; createIfNone?: boolean } = {},
+): Promise<string | undefined> {
+  const createIfNone = options.createIfNone ?? true;
   try {
     const session = await vscode.authentication.getSession(
       'github',
       ['read:user'],
-      { createIfNone: true, forceNewSession: options.forceNewSession ?? false },
+      { createIfNone, forceNewSession: options.forceNewSession ?? false },
     );
-    return session.accessToken;
+    return session?.accessToken;
   } catch {
-    vscode.window.showErrorMessage('AI Insights: GitHub sign-in is required for team server sharing.');
+    // Only surface an error when we actively tried to prompt - a silent
+    // (createIfNone: false) miss just means "not connected yet", not a failure.
+    if (createIfNone) {
+      vscode.window.showErrorMessage('AI Insights: GitHub sign-in is required for team server sharing.');
+    }
     return undefined;
   }
 }

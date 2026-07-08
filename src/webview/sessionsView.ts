@@ -1020,7 +1020,7 @@ export class SessionsViewProvider {
     parts.push('    sessions.forEach(function(s){');
     parts.push('      totalTokens+=s.totalTokens;totalCost+=s.estimatedCostUsd;totalInteractions+=s.interactions;');
     parts.push('      if(s.provider==="copilot")copilotCredits+=s.aiCredits;');
-    parts.push('      if(s.workspace)repos.add(s.workspace.replace(/\\\\\\\\/g,"/").split("/").pop()||s.workspace);');
+    parts.push('      if(s.workspace)repos.add(repoName(s));');
     parts.push('    });');
     parts.push('    document.getElementById("statSessions").textContent=sessions.length;');
     parts.push('    document.getElementById("statInteractions").textContent=totalInteractions.toLocaleString()+" interactions";');
@@ -1067,7 +1067,7 @@ export class SessionsViewProvider {
 
     parts.push('  function mergeMap(target,source){Object.keys(source||{}).forEach(function(k){target[k]=(target[k]||0)+source[k];});}');
     parts.push('  function topEntries(map,limit){return Object.keys(map||{}).map(function(k){return{name:k,count:map[k]};}).sort(function(a,b){return b.count-a.count||a.name.localeCompare(b.name);}).slice(0,limit||8);}');
-    parts.push('  function repoName(s){return s.workspace?(s.workspace.replace(/\\\\\\\\/g,"/").split("/").pop()||s.workspace):"Unknown";}');
+    parts.push('  function repoName(s){if(!s.workspace)return"Unknown";var n=s.workspace.replace(/\\\\\\\\/g,"/").split("/").pop()||s.workspace;return/^[0-9a-f]{6,10}(\\.\\.\\.)?$/i.test(n)?"Unknown":n;}');
     parts.push('  function relPath(fp,workspace){var p=String(fp||"");var ws=String(workspace||"").replace(/\\\\\\\\/g,"/");var pn=p.replace(/\\\\\\\\/g,"/");if(ws&&pn.startsWith(ws))return pn.slice(ws.length).replace(/^\\//,"");var parts=pn.split("/");return parts.length>3?".../"+parts.slice(-3).join("/"):pn;}');
     parts.push('  function renderActivityCard(title,entries,color){');
     parts.push('    var max=entries.length?entries[0].count:0;');
@@ -1123,7 +1123,7 @@ export class SessionsViewProvider {
 
     parts.push('      var key="Unknown";');
     parts.push('      if(breakdown==="model")key=(s.models&&s.models.length)?s.models[0]:"Unknown";');
-    parts.push('      else if(breakdown==="workspace")key=s.workspace?(s.workspace.replace(/\\\\\\\\/g,"/").split("/").pop()||s.workspace):"Unknown";');
+    parts.push('      else if(breakdown==="workspace")key=repoName(s);');
     parts.push('      else key=s.providerName||s.provider;');
     parts.push('      dist[key]=(dist[key]||0)+val;');
     parts.push('    });');

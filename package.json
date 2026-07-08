@@ -2,7 +2,7 @@
   "name": "ai-insights",
   "displayName": "AI Insights - Token Tracker",
   "description": "Track token usage, costs, and AI metrics across GitHub Copilot, Antigravity, Claude Code, and Codex.",
-  "version": "0.1.12",
+  "version": "0.1.14",
   "publisher": "thewalking-dev",
   "license": "MIT",
   "icon": "assets/logo.png",
@@ -209,7 +209,10 @@
         },
         "aiInsights.providers.copilot.cacheEstimation.convention": {
           "type": "string",
-          "enum": ["inclusive", "exclusive"],
+          "enum": [
+            "inclusive",
+            "exclusive"
+          ],
           "enumDescriptions": [
             "inputTokens stays as the real reported total; the cache estimates are treated as subsets of it. Keeps cost calculations accurate. Recommended.",
             "inputTokens is reduced to whatever's left after the cache read/write estimates (often ~0); the cache estimates are additive on top. Matches Claude Code's convention and makes the Cache Efficiency dashboard widget's hit-rate % exact, but can understate cost when the cache estimates exceed fresh tokens."

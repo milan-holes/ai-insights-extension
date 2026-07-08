@@ -67,13 +67,15 @@ body {
 
 .tc-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
   flex-shrink: 0;
 }
 
 .tc-search {
-  flex: 1;
+  flex: 1 1 100%;
+  min-width: 0;
   background: var(--bg-surface-high);
   border: 1px solid var(--border);
   color: var(--text-primary);

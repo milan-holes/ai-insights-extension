@@ -569,6 +569,7 @@ export class CopilotProvider extends BaseProvider {
     let pendingInputEstimate = 0;
     let startTime: Date | null = null;
     let endTime = fallbackTimestamp;
+    let segmentStart = 0;
 
     for (const line of content.trim().split('\n')) {
       if (!line.trim()) { continue; }
@@ -580,6 +581,9 @@ export class CopilotProvider extends BaseProvider {
 
         if (event.type === 'session.start' && event.data?.sessionId) {
           sessionId = event.data.sessionId;
+        }
+        if ((event.type === 'session.start' || event.type === 'session.resume') && event.data?.selectedModel) {
+          currentModel = this.normalizeModelId(event.data.selectedModel);
         }
         if (event.type === 'session.model_change' && event.data?.newModel) {
           currentModel = this.normalizeModelId(event.data.newModel);
@@ -629,6 +633,11 @@ export class CopilotProvider extends BaseProvider {
             toolCalls: [],
           });
         }
+
+        if (event.type === 'session.shutdown') {
+          this.reconcileCliSegmentUsage(interactions, segmentStart, event.data?.modelMetrics);
+          segmentStart = interactions.length;
+        }
       } catch {
         // Skip malformed lines.
       }
@@ -640,6 +649,45 @@ export class CopilotProvider extends BaseProvider {
     const session = this.buildSession(filePath, sessionId, startTime || fallbackTimestamp, endTime, interactions);
     session.estimatedCostUsd = estimatedCostUsd;
     return session;
+  }
+
+  /**
+   * The CLI's `session.shutdown` event carries real, model-attributed usage totals
+   * (`data.modelMetrics[model].usage`) for every `assistant.message` call since the previous
+   * `session.start`/`session.shutdown` - including `cacheWriteTokens`, which Copilot CLI's
+   * Claude-model billing genuinely reports (unlike the VS Code extension's debug-log telemetry,
+   * see `attachRealCacheData`). Only the segment aggregate is real; there's no per-call
+   * breakdown, so this distributes each field across that segment's interactions in proportion
+   * to their already-real `outputTokens` (falling back to an even split if all are zero).
+   * Compaction interactions already carry their own real numbers and are left untouched.
+   */
+  private reconcileCliSegmentUsage(interactions: Interaction[], segmentStart: number, modelMetrics: unknown): void {
+    if (!modelMetrics || typeof modelMetrics !== 'object') { return; }
+
+    for (const [rawModel, metrics] of Object.entries(modelMetrics as Record<string, any>)) {
+      const usage = metrics?.usage;
+      if (!usage) { continue; }
+      const model = this.normalizeModelId(rawModel);
+      const realInput = Number(usage.inputTokens) || 0;
+      const realCacheRead = Number(usage.cacheReadTokens) || 0;
+      const realCacheWrite = Number(usage.cacheWriteTokens) || 0;
+
+      const segment = interactions
+        .slice(segmentStart)
+        .filter(interaction => interaction.model === model && interaction.mode !== 'compaction');
+      if (segment.length === 0) { continue; }
+
+      const outputWeightTotal = segment.reduce((sum, i) => sum + i.outputTokens, 0);
+
+      for (const interaction of segment) {
+        const weight = outputWeightTotal > 0 ? interaction.outputTokens / outputWeightTotal : 1 / segment.length;
+        interaction.inputTokens = Math.round(realInput * weight);
+        interaction.cacheReadTokens = Math.round(realCacheRead * weight);
+        interaction.cacheWriteTokens = Math.round(realCacheWrite * weight);
+        interaction.totalTokens = interaction.inputTokens + interaction.outputTokens + interaction.thinkingTokens;
+        interaction.effectiveContextTokens = interaction.inputTokens + interaction.cacheReadTokens + interaction.cacheWriteTokens;
+      }
+    }
   }
 
   /**

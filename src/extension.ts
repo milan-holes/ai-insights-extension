@@ -31,6 +31,14 @@ import { AcceptanceTracker } from './core/acceptanceTracker';
 import { DiffTracker } from './core/diffTracker';
 import { Session, AggregatedMetrics, AggregationConfig, AlertThresholds } from './types';
 import { ConnectedGitHubUser, connectGitHubAndDetectPlan, getGitHubAccessToken } from './core/githubAuth';
+import {
+  fetchCopilotQuota,
+  findPremiumQuota,
+  buildQuotaView,
+  QuotaHistoryStore,
+  CopilotQuotaData,
+  CopilotQuotaView,
+} from './core/copilotQuota';
 import { PromptHistoryStore } from './core/promptHistory';
 import { PromptHistoryViewProvider } from './webview/promptHistoryView';
 import { TokenCalculatorProvider } from './webview/tokenCalculator';
@@ -59,6 +67,9 @@ let allSessions: Session[] = [];
 let latestMetrics: AggregatedMetrics | null = null;
 let liveContextInfos: LiveContextInfo[] = [];
 let connectedGitHubUser: ConnectedGitHubUser | undefined;
+let copilotQuota: CopilotQuotaData | null = null;
+let copilotQuotaHistoryStore: QuotaHistoryStore;
+let extensionContext: vscode.ExtensionContext;
 const cacheManager = new CacheManager();
 let snapshotStore: SessionSnapshotStore;
 const promptHistoryStore = new PromptHistoryStore();
@@ -79,7 +90,9 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(outputChannel);
   console.log('[AI Insights] Activating extension...');
 
+  extensionContext = context;
   connectedGitHubUser = context.globalState.get<ConnectedGitHubUser>(GITHUB_USER_STATE_KEY);
+  copilotQuotaHistoryStore = new QuotaHistoryStore(context.globalState);
   liveBudgetConfig = context.globalState.get<LiveBudgetConfig | null>(LIVE_BUDGET_CONFIG_KEY, null);
   rateLimitEvents = context.globalState.get<RateLimitEvent[]>(RATE_LIMIT_EVENTS_KEY, []);
   snapshotStore = new SessionSnapshotStore(
@@ -488,10 +501,43 @@ async function refresh(providers: BaseProvider[]) {
     latestMetrics = aggregateSessions(allSessions, getAggregationConfig());
     promptHistoryStore.update(allSessions);
     updateStatusBar(latestMetrics);
+    void refreshCopilotQuota();
   } catch (err) {
     console.error('[AI Insights] Refresh failed:', err);
     statusBarItem.text = '$(warning) AI Insights: Error';
   }
+}
+
+/**
+ * Fetches real GitHub Copilot quota (premium-request remaining/entitlement/reset
+ * date) from GitHub's internal `copilot_internal/user` endpoint - distinct from
+ * the token/cost numbers estimated from local session logs. Only runs once the
+ * user has explicitly connected GitHub (`aiInsights.connectGitHub`); uses a
+ * silent, non-prompting auth check so it never surprises users who haven't.
+ * The endpoint is undocumented and may 403/404 for some accounts/orgs, so
+ * failures are logged and swallowed rather than surfaced as errors.
+ */
+async function refreshCopilotQuota(): Promise<void> {
+  if (!connectedGitHubUser) { return; }
+  try {
+    const token = await getGitHubAccessToken({ createIfNone: false });
+    if (!token) { return; }
+    const data = await fetchCopilotQuota(token);
+    if (!data) { return; }
+    copilotQuota = data;
+    copilotQuotaHistoryStore.setAccount(data.login);
+    const premium = findPremiumQuota(data);
+    if (premium && !premium.unlimited) {
+      copilotQuotaHistoryStore.add(premium.remaining, premium.entitlement);
+    }
+    if (latestMetrics) { updateStatusBar(latestMetrics); }
+  } catch (err) {
+    outputChannel.appendLine(`[CopilotQuota] refresh failed: ${err}`);
+  }
+}
+
+function getCopilotQuotaView(): CopilotQuotaView | undefined {
+  return copilotQuota ? buildQuotaView(copilotQuota, copilotQuotaHistoryStore.snapshots) : undefined;
 }
 
 function dedupeSessions(sessions: Session[]): Session[] {
@@ -558,19 +604,23 @@ function updateStatusBar(metrics: AggregatedMetrics) {
       `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''} · ${contextLimitLabel} ctx limit`,
     ];
 
+    const truncateTitle = (t: string, max = 32) =>
+      t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
     for (const live of liveSessions) {
-      const titleLine = live.sessionTitle ? `**${live.sessionTitle}**` : '_Unnamed session_';
-      const ctxBar = buildMiniBar(live.contextPct, 20);
+      const titleLabel = live.sessionTitle
+        ? `**${truncateTitle(live.sessionTitle)}**`
+        : '_Unnamed session_';
+      const ctxBar = buildMiniBar(live.contextPct, 12);
       const healthIcon2 = live.healthLabel === 'healthy' ? '✅' : live.healthLabel === 'warning' ? '⚠️' : '🔴';
       lines.push(
         ``,
-        titleLine,
-        `${ctxBar} ${live.contextPct}% · ${fmt2(live.lastInputTokens)} tokens`,
-        `${healthIcon2} **${live.healthLabel}** (${live.healthScore}/10) · ${live.turnsCount} turns · ${live.cacheEfficiencyPct}% cache`,
+        `${titleLabel} ${ctxBar} ${live.contextPct}%`,
+        `${fmt2(live.lastInputTokens)} tokens · ${healthIcon2} **${live.healthLabel}** (${live.healthScore}/10) · ${live.turnsCount} turns · ${live.cacheEfficiencyPct}% cache`,
       );
     }
 
     lines.push(
+      ``,
       `📅 Today: ${metrics.today.totalTokens.toLocaleString()} tokens · ${metrics.today.sessions} sessions`,
     );
     for (const [id, p] of Object.entries(metrics.todayByProvider)) {
@@ -578,6 +628,7 @@ function updateStatusBar(metrics: AggregatedMetrics) {
         lines.push(`\n &nbsp; ${getProviderDisplayName(id)}: ${p.totalTokens.toLocaleString()} tokens`);
       }
     }
+    lines.push(...buildQuotaTooltipLines());
     lines.push(``, `_Click for dashboard_`);
 
     const tooltip = new vscode.MarkdownString(lines.join('\n'));
@@ -608,6 +659,7 @@ function updateStatusBar(metrics: AggregatedMetrics) {
       `  Value generated: ~$${valueGenerated.toFixed(0)}`,
       `  ROI: ~${roiMultiplier}×`,
       `  _(${tokensPerHour.toLocaleString()} tokens/hr · $${hourlyRate}/hr rate)_`,
+      ...buildQuotaTooltipLines(),
       ``,
       `_Click for dashboard · Updates every 5 min_`,
     );
@@ -616,6 +668,20 @@ function updateStatusBar(metrics: AggregatedMetrics) {
     tooltip.isTrusted = true;
     statusBarItem.tooltip = tooltip;
   }
+}
+
+/** Renders the real Copilot AI-credit quota (if fetched) as markdown lines for the status bar tooltip. */
+function buildQuotaTooltipLines(): string[] {
+  const q = getCopilotQuotaView();
+  if (!q) { return []; }
+  if (q.unlimited) {
+    return ['', `🐙 Copilot Quota: **Unlimited** (${q.planLabel})`];
+  }
+  const statusLine = q.isOverQuota
+    ? `Over by **${q.overageAmount}**`
+    : `**${q.remaining}/${q.entitlement}** remaining (${q.percentRemaining}%)`;
+  const exhaustionNote = q.daysUntilExhaustion !== null ? ` · ~${q.daysUntilExhaustion}d until exhausted at current pace` : '';
+  return ['', `🐙 Copilot Quota: ${statusLine} · resets in ${q.resetDays}d ${q.resetHours}h${exhaustionNote}`];
 }
 
 function buildMiniBar(pct: number, width: number): string {
@@ -650,7 +716,7 @@ async function showDashboard(context: vscode.ExtensionContext) {
       insightsStateStore.getDismissed(),
       insightsStateStore.getSnoozedUntil(),
     );
-    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore, diffTracker.getStats(), insights);
+    DashboardProvider.createPanel(context, latestMetrics, connectedGitHubUser, false, [], roiCfg, acceptance, healthScore, diffTracker.getStats(), insights, getCopilotQuotaView());
   }
 }
 
@@ -660,6 +726,7 @@ async function handleConnectGitHub(context: vscode.ExtensionContext) {
     connectedGitHubUser = user;
     await context.globalState.update(GITHUB_USER_STATE_KEY, user);
     await refresh(getEnabledProviders());
+    await refreshCopilotQuota();
     showDashboard(context);
   }
 }
@@ -711,6 +778,7 @@ async function promptEnableCopilotDebugLogging(context: vscode.ExtensionContext,
 
 async function handleDisconnectGitHub(context: vscode.ExtensionContext) {
   connectedGitHubUser = undefined;
+  copilotQuota = null;
   await context.globalState.update(GITHUB_USER_STATE_KEY, undefined);
   vscode.window.showInformationMessage('AI Insights: GitHub account disconnected. Budget is now set manually via settings.');
   showDashboard(context);

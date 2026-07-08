@@ -205,8 +205,8 @@ export class PricingViewProvider {
               ${ghIconSvg}
               <span>Connected as <strong>@${githubUser.login}</strong> &middot; GitHub ${planLabel} &middot; $${githubUser.monthlyBudgetUsd}/month</span>
               <div style="margin-left:auto;display:flex;gap:6px;flex-shrink:0">
-                <button class="gh-btn" onclick="post('connectGitHub')">Reconnect</button>
-                <button class="gh-btn gh-btn-danger" onclick="post('disconnectGitHub')">Disconnect</button>
+                <button class="gh-btn" onclick="window.vscode.postMessage({command:'connectGitHub'})">Reconnect</button>
+                <button class="gh-btn gh-btn-danger" onclick="window.vscode.postMessage({command:'disconnectGitHub'})">Disconnect</button>
               </div>
             </div>
             ${creditsLine}
@@ -216,7 +216,7 @@ export class PricingViewProvider {
         budgetWidget = `<div class="github-connect">
           ${ghIconSvg}
           <span>Connect GitHub to auto-detect your Copilot plan and set the budget.</span>
-          <button class="gh-btn" style="margin-left:auto" onclick="post('connectGitHub')">Connect GitHub</button>
+          <button class="gh-btn" style="margin-left:auto" onclick="window.vscode.postMessage({command:'connectGitHub'})">Connect GitHub</button>
         </div>`;
       }
 
