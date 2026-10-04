@@ -56,7 +56,7 @@ const CLAUDE_BIN_CANDIDATES = [
   path.join(os.homedir(), '.claude', 'bin', 'claude'),
 ];
 
-async function findClaudeBin(): Promise<string | null> {
+export async function findClaudeBin(): Promise<string | null> {
   for (const bin of CLAUDE_BIN_CANDIDATES) {
     const found = await new Promise<boolean>(resolve => {
       cp.exec(`"${bin}" --version`, (err) => resolve(!err));
@@ -221,7 +221,7 @@ const CODEX_BIN_CANDIDATES = [
   '/opt/homebrew/bin/codex',
 ];
 
-async function findCodexBin(): Promise<string | null> {
+export async function findCodexBin(): Promise<string | null> {
   for (const bin of CODEX_BIN_CANDIDATES) {
     const found = await new Promise<boolean>(resolve => {
       cp.exec(`"${bin}" --version`, (err) => resolve(!err));

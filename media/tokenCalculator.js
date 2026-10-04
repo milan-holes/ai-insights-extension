@@ -16,18 +16,18 @@
     xai:       4.0,  // Grok (tiktoken-compatible)
   }
 
-  const CONTEXT_WINDOWS = {
-    'claude-haiku-4.5':  200_000, 'claude-sonnet-4':   200_000,
-    'claude-sonnet-4.5': 200_000, 'claude-sonnet-4.6': 200_000,
-    'claude-opus-4.5':   200_000, 'claude-opus-4.6':   200_000, 'claude-opus-4.7': 200_000,
-    'gpt-4.1':           1_048_576,
-    'gpt-5-mini':        128_000, 'gpt-5.2':      128_000, 'gpt-5.2-codex': 128_000,
-    'gpt-5.3-codex':     128_000, 'gpt-5.4':      128_000, 'gpt-5.4-mini':  128_000,
-    'gpt-5.4-nano':      128_000, 'gpt-5.5':      128_000,
-    'gemini-2.5-pro':    1_048_576, 'gemini-3-flash': 1_048_576, 'gemini-3.1-pro': 1_048_576,
-    'grok-code-fast-1':  131_072,
+  // Context windows come from the shared pricing table (contextWindowTokens in
+  // src/data/modelPricing.json), so there is one table to update per model
+  // release. aiInsights.context.limitTokens overrides every row when set.
+  const CTX_CONFIG = (typeof window !== 'undefined' && window.TC_CONTEXT) ? window.TC_CONTEXT : {}
+  const DEFAULT_CONTEXT = CTX_CONFIG.fallback || 128_000
+  const CTX_OVERRIDE = CTX_CONFIG.override || 0
+
+  /** @param {string} id @param {{contextWindowTokens?:number}} m */
+  function contextWindowFor(id, m) {
+    if (CTX_OVERRIDE > 0) return CTX_OVERRIDE
+    return (m && m.contextWindowTokens) || DEFAULT_CONTEXT
   }
-  const DEFAULT_CONTEXT = 128_000
 
   /** @type {Map<string, string>} path -> content */
   const fileContents = new Map()
@@ -275,7 +275,7 @@
     </div>`
 
     const rows = models.map(([id, m]) => {
-      const ctx        = CONTEXT_WINDOWS[id] || DEFAULT_CONTEXT
+      const ctx        = contextWindowFor(id, m)
       const cpt        = CHARS_PER_TOKEN_BY_PROVIDER[m.provider] || CHARS_PER_TOKEN
       const fileToks   = Math.round(fileChars / cpt)
       const promptToks = Math.round(promptChars / cpt)

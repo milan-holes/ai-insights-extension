@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { Session } from '../types';
 import { calculateCost } from '../core/costEstimation';
-import { navCss, navTopbarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { resolveSessionContextWindow } from '../core/contextWindow';
+import { navCss, navTopbarHtml, navJs, NAV_COMMANDS, webviewAssets, WebviewAssets } from './navShared';
 import { designTokensCss, baseResetCss } from './designSystem';
 import { providerIcon } from './providerIcons';
 
@@ -64,7 +65,8 @@ export class ReplayViewProvider {
       ReplayViewProvider.currentPanel.reveal(vscode.ViewColumn.One);
       const logoUri = ReplayViewProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
       ReplayViewProvider.currentPanel.title = `Replay · ${session.title || session.id.slice(0, 12)}`;
-      ReplayViewProvider.currentPanel.webview.html = ReplayViewProvider.buildHtml(session, logoUri);
+      ReplayViewProvider.currentPanel.webview.html = ReplayViewProvider.buildHtml(
+        session, logoUri, webviewAssets(ReplayViewProvider.currentPanel.webview, context.extensionUri));
       return ReplayViewProvider.currentPanel;
     }
 
@@ -76,7 +78,7 @@ export class ReplayViewProvider {
     );
 
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = ReplayViewProvider.buildHtml(session, logoUri);
+    panel.webview.html = ReplayViewProvider.buildHtml(session, logoUri, webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage((msg) => {
       const navCmd = NAV_COMMANDS[msg.command];
@@ -91,7 +93,7 @@ export class ReplayViewProvider {
     return panel;
   }
 
-  static buildHtml(session: Session, logoUri: string): string {
+  static buildHtml(session: Session, logoUri: string, assets: WebviewAssets): string {
     const turns: ReplayTurn[] = session.interactions.map((i, idx) => ({
       idx,
       ts: i.timestamp instanceof Date ? i.timestamp.toISOString() : String(i.timestamp),
@@ -117,7 +119,13 @@ export class ReplayViewProvider {
       webSearchRequests: i.webSearchRequests || 0,
     }));
 
-    const maxCtx = session.peakEffectiveContextTokens || Math.max(...turns.map(t => t.effectiveContextTokens), 1);
+    const peakCtx = session.peakEffectiveContextTokens || Math.max(...turns.map(t => t.effectiveContextTokens), 1);
+    // The fill bar denominator is the model's real context window, not the
+    // session's own peak — normalizing to the peak made every session end at
+    // 100% red regardless of how full the window actually got. Keep the peak as
+    // a floor so a session that outgrew the resolved window still renders.
+    const contextWindow = resolveSessionContextWindow(session);
+    const maxCtx = Math.max(contextWindow.tokens, peakCtx);
     const totalCost = session.estimatedCostUsd ?? turns.reduce((s, t) => s + t.costUsd, 0);
     const durationMs = session.endTime.getTime() - session.startTime.getTime();
     const provIcon = providerIcon(session.provider);
@@ -139,6 +147,7 @@ export class ReplayViewProvider {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+${assets.csp}
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Replay</title>
 <style>
@@ -254,8 +263,8 @@ ${turns.length === 0 ? `<div class="empty-state">No interactions recorded for th
   </div>
   <div class="sc">
     <div class="sc-lbl">Peak Context</div>
-    <div class="sc-val">${fmt(maxCtx)}</div>
-    <div class="sc-sub">tokens</div>
+    <div class="sc-val">${fmt(peakCtx)}</div>
+    <div class="sc-sub">of ${fmt(maxCtx)} window</div>
   </div>
   <div class="sc">
     <div class="sc-lbl">Total Tokens</div>
@@ -271,11 +280,11 @@ ${turns.length === 0 ? `<div class="empty-state">No interactions recorded for th
 
 <div class="replay-panel">
   <div class="transport-row">
-    <button class="tbtn" id="btn-start" title="Go to start [Home]" onclick="goTo(0)">⏮</button>
-    <button class="tbtn" id="btn-back" title="Previous [←]" onclick="stepBack()">⏪</button>
-    <button class="tbtn tbtn-play" id="btn-play" title="Play / Pause [Space]" onclick="togglePlay()">▶</button>
-    <button class="tbtn" id="btn-fwd" title="Next [→]" onclick="stepFwd()">⏩</button>
-    <button class="tbtn" id="btn-end" title="Go to end [End]" onclick="goTo(TURNS.length-1)">⏭</button>
+    <button class="tbtn" id="btn-start" title="Go to start [Home]" data-transport="start">⏮</button>
+    <button class="tbtn" id="btn-back" title="Previous [←]" data-transport="back">⏪</button>
+    <button class="tbtn tbtn-play" id="btn-play" title="Play / Pause [Space]" data-transport="play">▶</button>
+    <button class="tbtn" id="btn-fwd" title="Next [→]" data-transport="fwd">⏩</button>
+    <button class="tbtn" id="btn-end" title="Go to end [End]" data-transport="end">⏭</button>
     <div class="speed-wrap">
       <select class="speed-sel" id="speed-sel" title="Playback speed (turns/sec)">
         <option value="0.5">0.5×</option>
@@ -337,7 +346,17 @@ ${turns.length === 0 ? `<div class="empty-state">No interactions recorded for th
 
 </div>
 
-<script>
+<script nonce="${assets.nonce}">
+  document.addEventListener('click', function(ev) {
+    var b = ev.target.closest('[data-transport]');
+    if (!b) { return; }
+    var a = b.getAttribute('data-transport');
+    if (a === 'start') { goTo(0); }
+    else if (a === 'back') { stepBack(); }
+    else if (a === 'play') { togglePlay(); }
+    else if (a === 'fwd') { stepFwd(); }
+    else if (a === 'end') { goTo(TURNS.length - 1); }
+  });
   var vscode = acquireVsCodeApi();
   ${turns.length > 0 ? `
   var TURNS = ${turnsJson};

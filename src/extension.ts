@@ -39,6 +39,12 @@ import {
   CopilotQuotaData,
   CopilotQuotaView,
 } from './core/copilotQuota';
+import {
+  readClaudeOAuthAccessToken,
+  fetchClaudeRateLimitHeaders,
+  shouldRefreshClaudeQuota,
+  ClaudeRateLimitSnapshot,
+} from './core/claudeQuota';
 import { PromptHistoryStore } from './core/promptHistory';
 import { PromptHistoryViewProvider } from './webview/promptHistoryView';
 import { TokenCalculatorProvider } from './webview/tokenCalculator';
@@ -48,6 +54,7 @@ import { ClaudeAccountViewProvider } from './webview/claudeAccountView';
 import { detectLiveSessions } from './core/liveSessionMonitor';
 import { SessionSnapshotStore } from './core/sessionSnapshotStore';
 import { LiveContextTracker, LiveContextInfo } from './core/liveContextTracker';
+import { setContextWindowOverride } from './core/contextWindow';
 import { LiveTokenCounter } from './core/liveTokenCounter';
 import { LiveBudgetConfig, RateLimitEvent } from './types';
 import { computeUsageHealthScore } from './core/usageHealthScore';
@@ -57,6 +64,22 @@ import { ReplayViewProvider } from './webview/replayView';
 import { ShareServer } from './core/shareServer';
 import QRCode from 'qrcode';
 import { TeamShareClient, TeamShareSnapshot } from './core/teamShareClient';
+import {
+  QuotaWindowHistoryStore,
+  QuotaRisk,
+  QuotaGuardThresholds,
+  DEFAULT_QUOTA_THRESHOLDS,
+  assessQuotaRisk,
+  toClaudeQuotaWindows,
+  toCodexQuotaWindows,
+  toCopilotQuotaWindow,
+  rankHandoffTargets,
+  worstRisk,
+  severityRank,
+  formatMinutes,
+} from './core/quotaGuard';
+import { prepareHandoff, promptForDelegation } from './core/handoffCoordinator';
+import { createCheckpoint, listCheckpoints, buildRestoreInstructions } from './core/sessionCheckpoint';
 
 let statusBarItem: vscode.StatusBarItem;
 const shareServer = new ShareServer();
@@ -69,6 +92,8 @@ let liveContextInfos: LiveContextInfo[] = [];
 let connectedGitHubUser: ConnectedGitHubUser | undefined;
 let copilotQuota: CopilotQuotaData | null = null;
 let copilotQuotaHistoryStore: QuotaHistoryStore;
+let claudeQuota: ClaudeRateLimitSnapshot | null = null;
+let claudeQuotaLastFetchAt: Date | null = null;
 let extensionContext: vscode.ExtensionContext;
 const cacheManager = new CacheManager();
 let snapshotStore: SessionSnapshotStore;
@@ -85,6 +110,17 @@ const COPILOT_DEBUG_LOG_PROMPT_RESOLVED_KEY = 'aiInsights.copilotDebugLogPromptR
 let liveBudgetConfig: LiveBudgetConfig | null = null;
 let rateLimitEvents: RateLimitEvent[] = [];
 
+// ─── Quota Guard state ────────────────────────────────────────────────────────
+const QUOTA_GUARD_SNOOZE_KEY = 'aiInsights.quotaGuardSnoozedUntil';
+/** Minimum gap between notifications for the same window, so a long session isn't spammed. */
+const QUOTA_WARN_COOLDOWN_MS = 20 * 60 * 1000;
+let quotaWindowHistory: QuotaWindowHistoryStore;
+let latestQuotaRisks: QuotaRisk[] = [];
+/** windowId -> last notification time, keyed per window so each wall warns once. */
+const quotaWarnedAt = new Map<string, number>();
+/** Last severity seen per window, so an escalation (warning → critical) re-notifies immediately. */
+const quotaLastSeverity = new Map<string, QuotaRisk['severity']>();
+
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('AI Insights');
   context.subscriptions.push(outputChannel);
@@ -93,6 +129,7 @@ export function activate(context: vscode.ExtensionContext) {
   extensionContext = context;
   connectedGitHubUser = context.globalState.get<ConnectedGitHubUser>(GITHUB_USER_STATE_KEY);
   copilotQuotaHistoryStore = new QuotaHistoryStore(context.globalState);
+  quotaWindowHistory = new QuotaWindowHistoryStore(context.globalState);
   liveBudgetConfig = context.globalState.get<LiveBudgetConfig | null>(LIVE_BUDGET_CONFIG_KEY, null);
   rateLimitEvents = context.globalState.get<RateLimitEvent[]>(RATE_LIMIT_EVENTS_KEY, []);
   snapshotStore = new SessionSnapshotStore(
@@ -101,8 +138,14 @@ export function activate(context: vscode.ExtensionContext) {
   );
   sessionTagsStore = new SessionTagsStore(context.globalStorageUri.fsPath);
   insightsStateStore = new InsightsStateStore(context.globalStorageUri.fsPath);
+  cacheManager.load(context.globalStorageUri.fsPath);
   acceptanceTracker.register(context);
   diffTracker.register(context);
+
+  // Context-window override (0 = resolve each session's window from its model).
+  setContextWindowOverride(
+    vscode.workspace.getConfiguration('aiInsights').get<number>('context.limitTokens', 0) || undefined,
+  );
 
   // Wire tag callbacks so the sessions view can persist tag changes
   SessionsViewProvider._addTag = (sessionId, tag) => {
@@ -186,11 +229,19 @@ vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string,
     vscode.commands.registerCommand('aiInsights.startSharing', () => handleStartSharing()),
     vscode.commands.registerCommand('aiInsights.stopSharing', () => handleStopSharing()),
     vscode.commands.registerCommand('aiInsights.enableCopilotRealCacheData', () => promptEnableCopilotDebugLogging(context, { force: true })),
+    vscode.commands.registerCommand('aiInsights.createCheckpoint', () => handleCreateCheckpoint()),
+    vscode.commands.registerCommand('aiInsights.showCheckpoints', () => handleShowCheckpoints()),
+    vscode.commands.registerCommand('aiInsights.prepareHandoff', () => handlePrepareHandoff({ delegate: true })),
+    vscode.commands.registerCommand('aiInsights.showQuotaStatus', () => handleShowQuotaStatus()),
   );
 
   void maybePromptEnableCopilotDebugLogging(context);
 
-  refresh(providers);
+  // Deferred, not awaited: the first refresh walks every provider's session
+  // directories synchronously. Running it inside activate() put that whole cost
+  // on the activation timer and blocked the extension host while other
+  // extensions were still starting up.
+  setTimeout(() => { void refresh(providers); }, 0);
 
   activeSessionsTimer = setInterval(() => {
     SessionsViewProvider.pushUpdate(context, allSessions, getLiveSessions(), liveBudgetConfig, false, sessionTagsStore.getAll());
@@ -208,6 +259,7 @@ vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string,
         if (refreshTimer) { clearInterval(refreshTimer); }
         const newConfig = vscode.workspace.getConfiguration('aiInsights');
         const newInterval = newConfig.get<number>('refreshIntervalMinutes', 5);
+        setContextWindowOverride(newConfig.get<number>('context.limitTokens', 0) || undefined);
         snapshotStore.setMaxSnapshots(newConfig.get<number>('providers.copilot.maxSessionSnapshots', 2000));
         const newProviders = getEnabledProviders();
         refreshTimer = setInterval(() => refresh(newProviders), newInterval * 60 * 1000);
@@ -222,6 +274,8 @@ vscode.commands.registerCommand('aiInsights.logRateLimitHit', (provider: string,
 export function deactivate() {
   if (refreshTimer) { clearInterval(refreshTimer); }
   if (activeSessionsTimer) { clearInterval(activeSessionsTimer); }
+  cacheManager.flush();
+  snapshotStore.flush();
   shareServer.stop();
 }
 
@@ -435,13 +489,6 @@ function getSessionCutoff(): Date {
   return cutoff;
 }
 
-function wasFileModifiedSince(filePath: string, cutoff: Date): boolean {
-  try {
-    return fs.statSync(filePath).mtime >= cutoff;
-  } catch {
-    return false;
-  }
-}
 
 function isSessionRecent(session: Session, cutoff: Date): boolean {
   // Use endTime so long-running sessions (e.g. Claude Code conversations started
@@ -449,22 +496,56 @@ function isSessionRecent(session: Session, cutoff: Date): boolean {
   return session.endTime >= cutoff;
 }
 
-async function refresh(providers: BaseProvider[]) {
+/** Files parsed between yields. Keeps the extension host responsive mid-refresh. */
+const PARSE_YIELD_EVERY = 20;
+
+/**
+ * Hand control back to the event loop.
+ *
+ * Every provider's discover/parse method is declared async but has a fully
+ * synchronous body, so `await`-ing them only drains the microtask queue - the
+ * host thread stays blocked for the whole refresh. An explicit setImmediate is
+ * the only thing that actually yields.
+ */
+function yieldToHost(): Promise<void> {
+  return new Promise<void>(resolve => setImmediate(resolve));
+}
+
+/** In-flight refresh, so the 5-minute timer cannot stack on a running pass. */
+let refreshInFlight: Promise<void> | null = null;
+
+function refresh(providers: BaseProvider[]): Promise<void> {
+  if (refreshInFlight) { return refreshInFlight; }
+  refreshInFlight = runRefresh(providers).finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+async function runRefresh(providers: BaseProvider[]) {
   try {
     const sessions: Session[] = [];
     const cutoff = getSessionCutoff();
     // Track Copilot session IDs found in live files so we can fill gaps from snapshots.
     const liveCopilotIds = new Set<string>();
+    const seenFiles = new Set<string>();
+    let sinceYield = 0;
+
+    for (const provider of providers) { provider.beginScan(); }
+    snapshotStore.beginScan();
 
     for (const provider of providers) {
       const files = await provider.discoverSessionFiles();
+      await yieldToHost();
 
       for (const file of files) {
-        if (!wasFileModifiedSince(file, cutoff)) {
-          continue;
-        }
+        // One stat per file, shared by the cutoff check, the cache freshness
+        // check and the provider's own fallback-timestamp lookup. These used to
+        // be three separate statSync calls on the same path.
+        let stats: fs.Stats;
+        try { stats = fs.statSync(file); } catch { continue; }
+        if (stats.mtime < cutoff) { continue; }
+        seenFiles.add(file);
 
-        if (!cacheManager.needsUpdate(file)) {
+        if (!cacheManager.needsUpdate(file, stats.mtimeMs)) {
           const cached = cacheManager.get(file);
           if (cached) {
             if (cached.provider === 'copilot') { liveCopilotIds.add(cached.id); }
@@ -474,17 +555,22 @@ async function refresh(providers: BaseProvider[]) {
         }
 
         try {
-          const session = await provider.parseSessionFile(file);
+          const session = await provider.parseSessionFile(file, stats);
+          cacheManager.set(file, session, stats.mtimeMs);
           if (session !== null) {
-            cacheManager.set(file, session);
             if (session.provider === 'copilot') {
               liveCopilotIds.add(session.id);
               snapshotStore.save(session);
             }
+            if (isSessionRecent(session, cutoff)) { sessions.push(session); }
           }
-          if (session && isSessionRecent(session, cutoff)) { sessions.push(session); }
         } catch {
           // Skip failed files silently
+        }
+
+        if (++sinceYield >= PARSE_YIELD_EVERY) {
+          sinceYield = 0;
+          await yieldToHost();
         }
       }
     }
@@ -496,15 +582,43 @@ async function refresh(providers: BaseProvider[]) {
       }
     }
     snapshotStore.prune(cutoff);
+    snapshotStore.flush();
+    cacheManager.pruneMissing(seenFiles);
+    cacheManager.flush();
 
     allSessions = dedupeSessions(sessions);
     latestMetrics = aggregateSessions(allSessions, getAggregationConfig());
     promptHistoryStore.update(allSessions);
     updateStatusBar(latestMetrics);
-    void refreshCopilotQuota();
+    await refreshCopilotQuota();
+    await refreshClaudeQuota();
+    await evaluateQuotaGuard();
   } catch (err) {
     console.error('[AI Insights] Refresh failed:', err);
     statusBarItem.text = '$(warning) AI Insights: Error';
+  }
+}
+
+/**
+ * Fetches real Claude Code plan-quota (5h/7d rate-limit-window utilization) by
+ * reusing the OAuth token Claude Code already wrote to `~/.claude/.credentials.json` -
+ * no login flow of our own. Opt-out via `aiInsights.providers.claudeCode.liveQuota.enabled`.
+ * Only runs when Claude Code sessions are present and at most once every
+ * `MIN_REFRESH_INTERVAL_MS`; failures are logged and swallowed, same as `refreshCopilotQuota()`.
+ */
+async function refreshClaudeQuota(): Promise<void> {
+  if (!vscode.workspace.getConfiguration('aiInsights').get<boolean>('providers.claudeCode.liveQuota.enabled', true)) { return; }
+  if (!allSessions.some(s => s.provider === 'claudeCode')) { return; }
+  if (!shouldRefreshClaudeQuota(claudeQuotaLastFetchAt)) { return; }
+  try {
+    const token = readClaudeOAuthAccessToken();
+    if (!token) { return; }
+    claudeQuotaLastFetchAt = new Date();
+    const snapshot = await fetchClaudeRateLimitHeaders(token);
+    if (!snapshot) { return; }
+    claudeQuota = snapshot;
+  } catch (err) {
+    outputChannel.appendLine(`[ClaudeQuota] refresh failed: ${err}`);
   }
 }
 
@@ -537,7 +651,7 @@ async function refreshCopilotQuota(): Promise<void> {
 }
 
 function getCopilotQuotaView(): CopilotQuotaView | undefined {
-  return copilotQuota ? buildQuotaView(copilotQuota, copilotQuotaHistoryStore.snapshots) : undefined;
+  return copilotQuota ? buildQuotaView(copilotQuota) : undefined;
 }
 
 function dedupeSessions(sessions: Session[]): Session[] {
@@ -598,10 +712,15 @@ function updateStatusBar(metrics: AggregatedMetrics) {
 
     const fmt2 = (n: number) => n.toLocaleString();
     const contextLimitLabel = fmt2(primary.contextLimitTokens);
+    // Say where the limit came from, so a wrong denominator is visible rather than
+    // silently baked in: the 1M window is a gated opt-in the session logs don't record.
+    const limitSourceLabel = primary.contextLimitSource === 'override' ? ' (setting)'
+      : primary.contextLimitSource === 'default' ? ' (default - model unknown)'
+      : '';
     const lines = [
       `🔴 **Session in progress** - don't close VS Code`,
       ``,
-      `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''} · ${contextLimitLabel} ctx limit`,
+      `🧠 AI Insights - Live Session${liveSessions.length > 1 ? `s (${liveSessions.length})` : ''} · ${contextLimitLabel} ctx limit${limitSourceLabel}`,
     ];
 
     const truncateTitle = (t: string, max = 32) =>
@@ -629,6 +748,7 @@ function updateStatusBar(metrics: AggregatedMetrics) {
       }
     }
     lines.push(...buildQuotaTooltipLines());
+    lines.push(...buildQuotaGuardTooltipLines());
     lines.push(``, `_Click for dashboard_`);
 
     const tooltip = new vscode.MarkdownString(lines.join('\n'));
@@ -660,6 +780,7 @@ function updateStatusBar(metrics: AggregatedMetrics) {
       `  ROI: ~${roiMultiplier}×`,
       `  _(${tokensPerHour.toLocaleString()} tokens/hr · $${hourlyRate}/hr rate)_`,
       ...buildQuotaTooltipLines(),
+      ...buildQuotaGuardTooltipLines(),
       ``,
       `_Click for dashboard · Updates every 5 min_`,
     );
@@ -668,6 +789,29 @@ function updateStatusBar(metrics: AggregatedMetrics) {
     tooltip.isTrusted = true;
     statusBarItem.tooltip = tooltip;
   }
+
+  applyQuotaGuardStatusBar();
+}
+
+/**
+ * Escalates the status bar when a quota window is about to run out. Appended
+ * after the normal text so it reads as a prefix-free suffix on either the live
+ * or idle variant, and takes over the background colour because a quota wall is
+ * more urgent than the budget-percentage warning it would otherwise show.
+ */
+function applyQuotaGuardStatusBar(): void {
+  const atRisk = latestQuotaRisks.filter(r => r.severity !== 'ok');
+  if (atRisk.length === 0) { return; }
+
+  const worst = worstRisk(atRisk);
+  if (!worst) { return; }
+
+  const workLeft = worst.minutesOfWorkLeft !== null ? ` ~${formatMinutes(worst.minutesOfWorkLeft)} left` : '';
+  const icon = worst.severity === 'warning' ? '$(warning)' : '$(error)';
+  statusBarItem.text = `${icon} ${worst.window.label} ${worst.window.pctUsed.toFixed(0)}%${workLeft} · ${statusBarItem.text}`;
+  statusBarItem.backgroundColor = new vscode.ThemeColor(
+    worst.severity === 'warning' ? 'statusBarItem.warningBackground' : 'statusBarItem.errorBackground',
+  );
 }
 
 /** Renders the real Copilot AI-credit quota (if fetched) as markdown lines for the status bar tooltip. */
@@ -836,11 +980,11 @@ function showPromptHistory(context: vscode.ExtensionContext) {
 
 async function showPricing(context: vscode.ExtensionContext) {
   if (!latestMetrics) { await refresh(getEnabledProviders()); }
-  PricingViewProvider.createPanel(context, latestMetrics ?? undefined, connectedGitHubUser);
+  PricingViewProvider.createPanel(context, latestMetrics ?? undefined, connectedGitHubUser, getCopilotQuotaView());
 }
 
 function showClaudeAccount(context: vscode.ExtensionContext) {
-  ClaudeAccountViewProvider.createPanel(context, latestMetrics ?? undefined, allSessions);
+  ClaudeAccountViewProvider.createPanel(context, latestMetrics ?? undefined, allSessions, claudeQuota ?? undefined);
 }
 
 function getLiveSessions() {
@@ -871,4 +1015,308 @@ async function handleSaveLiveBudgetConfig(
   liveBudgetConfig = cfg;
   await context.globalState.update(LIVE_BUDGET_CONFIG_KEY, cfg);
   vscode.window.showInformationMessage('Live budget config saved.');
+}
+
+// ─── Quota Guard ──────────────────────────────────────────────────────────────
+
+/**
+ * Builds the current cross-provider quota risk picture and warns while there is
+ * still time to stop cleanly.
+ *
+ * Runs at the end of every `refresh()`, so its cadence follows
+ * `aiInsights.refreshIntervalMinutes` (5 min by default) and it adds no polling
+ * of its own - the Copilot and Claude fetches are the same ones the dashboard
+ * already makes, and Codex quota is read straight out of session logs. The
+ * default 15-minute warning threshold is set comfortably above that poll
+ * interval; users who want a tighter lead time should lower the refresh
+ * interval too.
+ */
+async function evaluateQuotaGuard(): Promise<void> {
+  const config = vscode.workspace.getConfiguration('aiInsights');
+  if (!config.get<boolean>('quotaGuard.enabled', true)) {
+    latestQuotaRisks = [];
+    return;
+  }
+
+  const windows = [
+    toCopilotQuotaWindow(getCopilotQuotaView()),
+    ...toClaudeQuotaWindows(claudeQuota),
+    ...toCodexQuotaWindows(allSessions),
+  ].filter((w): w is NonNullable<typeof w> => w !== null);
+
+  const thresholds = getQuotaGuardThresholds(config);
+  const risks: QuotaRisk[] = [];
+  for (const window of windows) {
+    quotaWindowHistory.record(window.windowId, window.pctUsed);
+    risks.push(assessQuotaRisk(window, quotaWindowHistory.burnPctPerMin(window.windowId), thresholds));
+  }
+
+  latestQuotaRisks = risks;
+  if (latestMetrics) { updateStatusBar(latestMetrics); }
+
+  const worst = worstRisk(risks);
+  if (!worst || worst.severity === 'ok') { return; }
+
+  // Only warn about a provider that is actually being used right now - an idle
+  // provider's full window is not an interruption risk.
+  const liveProviders = new Set(getLiveSessions().map(s => s.provider));
+  if (!liveProviders.has(worst.window.provider)) { return; }
+
+  if (!shouldNotifyQuotaRisk(worst)) { return; }
+  await notifyQuotaRisk(worst, risks);
+}
+
+function getQuotaGuardThresholds(config: vscode.WorkspaceConfiguration): QuotaGuardThresholds {
+  return {
+    warnMinutesOfWork: config.get<number>('quotaGuard.warnMinutesOfWork', DEFAULT_QUOTA_THRESHOLDS.warnMinutesOfWork),
+    criticalMinutesOfWork: config.get<number>('quotaGuard.criticalMinutesOfWork', DEFAULT_QUOTA_THRESHOLDS.criticalMinutesOfWork),
+    warnPercentUsed: config.get<number>('quotaGuard.warnPercentUsed', DEFAULT_QUOTA_THRESHOLDS.warnPercentUsed),
+    criticalPercentUsed: config.get<number>('quotaGuard.criticalPercentUsed', DEFAULT_QUOTA_THRESHOLDS.criticalPercentUsed),
+  };
+}
+
+/**
+ * Notification gate: respects an explicit snooze, warns at most once per
+ * cooldown per window, but always lets a severity *escalation* through - going
+ * from "warning" to "critical" is new information the user needs immediately.
+ *
+ * Only an increase in severity bypasses the cooldown. Recovering the other way
+ * (critical back to warning) is good news, and re-alarming on it would just add
+ * noise.
+ */
+function shouldNotifyQuotaRisk(risk: QuotaRisk, now = Date.now()): boolean {
+  const snoozedUntil = extensionContext.globalState.get<number>(QUOTA_GUARD_SNOOZE_KEY, 0);
+  if (snoozedUntil > now) { return false; }
+
+  const windowId = risk.window.windowId;
+  const previousSeverity = quotaLastSeverity.get(windowId);
+  quotaLastSeverity.set(windowId, risk.severity);
+
+  const escalated = previousSeverity !== undefined
+    && severityRank(risk.severity) > severityRank(previousSeverity);
+  const lastWarnedAt = quotaWarnedAt.get(windowId) ?? 0;
+  if (!escalated && now - lastWarnedAt < QUOTA_WARN_COOLDOWN_MS) { return false; }
+
+  quotaWarnedAt.set(windowId, now);
+  return true;
+}
+
+/**
+ * Surfaces the risk as a real notification - the gap this closes is that
+ * liveSessionMonitor's alerts only ever rendered inside the Sessions webview,
+ * where nobody is looking while an agent works.
+ *
+ * Checkpointing happens *before* the notification when enabled, so the snapshot
+ * exists even if the user is away from the keyboard when the wall hits. It is
+ * non-invasive by construction (see sessionCheckpoint.ts), so taking it
+ * unprompted cannot disturb an in-flight agent.
+ */
+async function notifyQuotaRisk(risk: QuotaRisk, allRisks: QuotaRisk[]): Promise<void> {
+  const config = vscode.workspace.getConfiguration('aiInsights');
+  const autoCheckpoint = config.get<boolean>('quotaGuard.autoCheckpoint', true);
+  const workspacePath = getPrimaryWorkspacePath();
+
+  let checkpointNote = '';
+  if (autoCheckpoint && workspacePath) {
+    const checkpoint = createCheckpoint(workspacePath, risk.message);
+    if (checkpoint) {
+      checkpointNote = ` Work snapshotted (${checkpoint.filesChanged} files) - recoverable from ${checkpoint.ref}.`;
+      outputChannel.appendLine(`[QuotaGuard] checkpoint ${checkpoint.commitSha} - ${risk.message}`);
+    }
+  }
+
+  const headline = risk.severity === 'exhausted'
+    ? `AI Insights: ${risk.message}.${checkpointNote}`
+    : `AI Insights: ${risk.message}.${checkpointNote} Stop at a clean point soon.`;
+
+  const show = risk.severity === 'warning'
+    ? vscode.window.showWarningMessage
+    : vscode.window.showErrorMessage;
+
+  const action = await show(headline, 'Prepare handoff', 'Quota details', 'Snooze 1h');
+
+  if (action === 'Prepare handoff') {
+    await handlePrepareHandoff({ delegate: true, risk, risks: allRisks });
+  } else if (action === 'Quota details') {
+    await handleShowQuotaStatus();
+  } else if (action === 'Snooze 1h') {
+    await extensionContext.globalState.update(QUOTA_GUARD_SNOOZE_KEY, Date.now() + 60 * 60 * 1000);
+    vscode.window.showInformationMessage('AI Insights: quota warnings snoozed for 1 hour.');
+  }
+}
+
+function getPrimaryWorkspacePath(): string | null {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+}
+
+/**
+ * Picks the session to describe in a handoff: the live session belonging to the
+ * at-risk provider when there is one, otherwise the most recently active
+ * session in this workspace.
+ */
+function pickHandoffSession(risk: QuotaRisk | null): Session | null {
+  const workspacePath = getPrimaryWorkspacePath();
+  const liveIds = new Set(getLiveSessions().map(s => s.sessionId));
+
+  const candidates = allSessions.filter(session => {
+    if (risk && session.provider !== risk.window.provider) { return false; }
+    if (workspacePath && session.workspace && session.workspace !== 'unknown') {
+      return session.workspace === workspacePath;
+    }
+    return true;
+  });
+
+  const pool = candidates.length > 0 ? candidates : allSessions;
+  if (pool.length === 0) { return null; }
+
+  const live = pool.filter(s => liveIds.has(s.id));
+  const ranked = (live.length > 0 ? live : pool)
+    .slice()
+    .sort((a, b) => b.endTime.getTime() - a.endTime.getTime());
+  return ranked[0] ?? null;
+}
+
+async function handlePrepareHandoff(options: {
+  delegate: boolean;
+  risk?: QuotaRisk;
+  risks?: QuotaRisk[];
+}): Promise<void> {
+  const workspacePath = getPrimaryWorkspacePath();
+  if (!workspacePath) {
+    vscode.window.showWarningMessage('AI Insights: open a folder first - a handoff needs a workspace to describe.');
+    return;
+  }
+
+  const risks = options.risks ?? latestQuotaRisks;
+  const risk = options.risk ?? worstRisk(risks.filter(r => r.severity !== 'ok')) ?? null;
+  const session = pickHandoffSession(risk);
+  if (!session) {
+    vscode.window.showWarningMessage('AI Insights: no recent AI session found to hand off.');
+    return;
+  }
+
+  const config = vscode.workspace.getConfiguration('aiInsights');
+  const result = prepareHandoff({
+    session,
+    risk,
+    targets: risk ? rankHandoffTargets(risks, risk.window.provider) : [],
+    workspacePath,
+    handoffDirectory: config.get<string>('quotaGuard.handoffDirectory', '.ai-insights'),
+    checkpointEnabled: config.get<boolean>('quotaGuard.autoCheckpoint', true),
+    reason: risk?.message ?? 'Manual handoff',
+  });
+
+  if (!result) {
+    vscode.window.showErrorMessage('AI Insights: could not write the handoff brief.');
+    return;
+  }
+
+  outputChannel.appendLine(`[QuotaGuard] handoff written to ${result.handoffFilePath}`);
+
+  if (options.delegate) {
+    await promptForDelegation(result, risk ? rankHandoffTargets(risks, risk.window.provider) : []);
+  } else {
+    const doc = await vscode.workspace.openTextDocument(result.handoffFilePath);
+    await vscode.window.showTextDocument(doc, { preview: false });
+  }
+}
+
+async function handleCreateCheckpoint(): Promise<void> {
+  const workspacePath = getPrimaryWorkspacePath();
+  if (!workspacePath) {
+    vscode.window.showWarningMessage('AI Insights: open a folder first.');
+    return;
+  }
+
+  const checkpoint = createCheckpoint(workspacePath, 'Manual checkpoint');
+  if (!checkpoint) {
+    vscode.window.showInformationMessage(
+      'AI Insights: nothing to checkpoint - the working tree matches HEAD (or this is not a git repository).',
+    );
+    return;
+  }
+
+  const action = await vscode.window.showInformationMessage(
+    `AI Insights: checkpoint saved - ${checkpoint.filesChanged} files, +${checkpoint.insertions}/-${checkpoint.deletions}. Your working tree and index were not touched.`,
+    'Copy restore commands',
+  );
+  if (action === 'Copy restore commands') {
+    await vscode.env.clipboard.writeText(buildRestoreInstructions(checkpoint));
+    vscode.window.showInformationMessage('AI Insights: restore commands copied to the clipboard.');
+  }
+}
+
+async function handleShowCheckpoints(): Promise<void> {
+  const workspacePath = getPrimaryWorkspacePath();
+  if (!workspacePath) {
+    vscode.window.showWarningMessage('AI Insights: open a folder first.');
+    return;
+  }
+
+  const checkpoints = listCheckpoints(workspacePath);
+  if (checkpoints.length === 0) {
+    vscode.window.showInformationMessage('AI Insights: no checkpoints saved for this repository yet.');
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    checkpoints.map(checkpoint => ({
+      label: `$(history) ${new Date(checkpoint.createdAt).toLocaleString()}`,
+      description: checkpoint.commitSha.slice(0, 8),
+      detail: checkpoint.reason,
+      checkpoint,
+    })),
+    { title: 'Safe-stop checkpoints', placeHolder: 'Pick a checkpoint to copy its restore commands' },
+  );
+
+  if (picked) {
+    await vscode.env.clipboard.writeText(buildRestoreInstructions(picked.checkpoint));
+    vscode.window.showInformationMessage('AI Insights: restore commands copied to the clipboard.');
+  }
+}
+
+async function handleShowQuotaStatus(): Promise<void> {
+  if (latestQuotaRisks.length === 0) {
+    vscode.window.showInformationMessage(
+      'AI Insights: no live quota data yet. Connect GitHub for Copilot quota, sign in to Claude Code for its windows, or run a Codex session.',
+    );
+    return;
+  }
+
+  const items = latestQuotaRisks
+    .slice()
+    .sort((a, b) => b.window.pctUsed - a.window.pctUsed)
+    .map(risk => {
+      const icon = risk.severity === 'exhausted' || risk.severity === 'critical' ? '$(error)'
+        : risk.severity === 'warning' ? '$(warning)'
+          : '$(check)';
+      const workLeft = risk.minutesOfWorkLeft !== null
+        ? `~${formatMinutes(risk.minutesOfWorkLeft)} of work left`
+        : 'burn rate not measured yet';
+      const source = risk.window.source === 'session-log' ? 'from session log' : 'live from provider';
+      return {
+        label: `${icon} ${risk.window.label}`,
+        description: `${risk.window.pctUsed.toFixed(0)}% used`,
+        detail: `${workLeft} · ${source}${risk.resetsBeforeExhaustion ? ' · resets before running out' : ''}`,
+      };
+    });
+
+  await vscode.window.showQuickPick(items, {
+    title: 'Quota windows',
+    placeHolder: 'Live quota across providers - highest usage first',
+  });
+}
+
+/** Status-bar tooltip lines for any window that is at risk. */
+function buildQuotaGuardTooltipLines(): string[] {
+  const atRisk = latestQuotaRisks.filter(r => r.severity !== 'ok');
+  if (atRisk.length === 0) { return []; }
+
+  const lines = ['', '⚠️ **Quota Guard**'];
+  for (const risk of atRisk) {
+    const icon = risk.severity === 'warning' ? '⚠️' : '🔴';
+    lines.push(`\n${icon} ${risk.message}`);
+  }
+  lines.push('', `_[Prepare handoff](command:aiInsights.prepareHandoff) · [Checkpoint now](command:aiInsights.createCheckpoint)_`);
+  return lines;
 }

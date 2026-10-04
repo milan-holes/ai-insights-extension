@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { AggregatedMetrics, RepositoryHygieneReport, FileStatus, AcceptanceMetrics } from '../types';
 import { providerIcon } from './providerIcons';
-import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS, webviewAssets, WebviewAssets } from './navShared';
 import { designTokensCss } from './designSystem';
 
 
@@ -493,13 +493,14 @@ function buildAcceptanceSection(a: AcceptanceMetrics): string {
 
 interface RoiConfig { hourlyRate: number; tokensPerHourSaved: number; }
 
-function getHtml(m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acceptance: AcceptanceMetrics, _roiConfig: RoiConfig, refreshing = false, logoUri = ''): string {
+function getHtml(m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acceptance: AcceptanceMetrics, _roiConfig: RoiConfig, refreshing = false, logoUri = '', assets: WebviewAssets): string {
   const knownReports = reports.filter(r => r.repoPath && r.repoPath !== 'Path unresolved');
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+${assets.csp}
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Insights - Workspace Analysis</title>
 <style>
@@ -570,7 +571,7 @@ function getHtml(m: AggregatedMetrics, reports: RepositoryHygieneReport[], _acce
   </div>
 </div><!-- /ns-content -->
 
-<script>
+<script nonce="${assets.nonce}">
   window.vsc = acquireVsCodeApi();
   window.vscode = window.vsc;
   document.addEventListener('visibilitychange', function() {
@@ -611,7 +612,9 @@ export class UsageAnalysisProvider {
 
     if (UsageAnalysisProvider.currentPanel) {
       const logoUri = UsageAnalysisProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      UsageAnalysisProvider.currentPanel.webview.html = getHtml(metrics, reports, acceptance, roiConfig, refreshing, logoUri);
+      UsageAnalysisProvider.currentPanel.webview.html = getHtml(
+        metrics, reports, acceptance, roiConfig, refreshing, logoUri,
+        webviewAssets(UsageAnalysisProvider.currentPanel.webview, context.extensionUri));
       UsageAnalysisProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return;
     }
@@ -627,7 +630,8 @@ export class UsageAnalysisProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = getHtml(metrics, reports, acceptance, roiConfig, refreshing, logoUri);
+    panel.webview.html = getHtml(metrics, reports, acceptance, roiConfig, refreshing, logoUri,
+      webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage(msg => {
       const cmd = NAV_COMMANDS[msg.command];

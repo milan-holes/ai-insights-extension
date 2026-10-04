@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { PromptRecord } from '../core/promptHistory';
 import { PROVIDER_ICONS } from './providerIcons';
-import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS, webviewAssets, WebviewAssets } from './navShared';
 import { designTokensCss } from './designSystem';
 
 export class PromptHistoryViewProvider {
@@ -13,7 +13,9 @@ export class PromptHistoryViewProvider {
 
     if (PromptHistoryViewProvider.currentPanel) {
       const logoUri = PromptHistoryViewProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      PromptHistoryViewProvider.currentPanel.webview.html = PromptHistoryViewProvider.buildHtml(records, refreshing, logoUri);
+      PromptHistoryViewProvider.currentPanel.webview.html = PromptHistoryViewProvider.buildHtml(
+        records, refreshing, logoUri,
+        webviewAssets(PromptHistoryViewProvider.currentPanel.webview, context.extensionUri));
       PromptHistoryViewProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return PromptHistoryViewProvider.currentPanel;
     }
@@ -29,7 +31,8 @@ export class PromptHistoryViewProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = PromptHistoryViewProvider.buildHtml(records, refreshing, logoUri);
+    panel.webview.html = PromptHistoryViewProvider.buildHtml(records, refreshing, logoUri,
+      webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -55,7 +58,7 @@ export class PromptHistoryViewProvider {
     return panel;
   }
 
-  private static buildHtml(records: PromptRecord[], refreshing = false, logoUri = ''): string {
+  private static buildHtml(records: PromptRecord[], refreshing = false, logoUri = '', assets: WebviewAssets): string {
     const recent = records.slice(0, 50);
     const serialized = JSON.stringify(recent.map(r => ({
       timestamp: r.timestamp instanceof Date ? r.timestamp.toISOString() : String(r.timestamp),
@@ -77,6 +80,7 @@ export class PromptHistoryViewProvider {
 
     p.push('<!DOCTYPE html><html lang="en"><head>');
     p.push('<meta charset="UTF-8">');
+    p.push(assets.csp);
     p.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     p.push('<title>Prompt History</title>');
     p.push('<style>');
@@ -167,11 +171,11 @@ export class PromptHistoryViewProvider {
     p.push('<div class="section"><div id="tableContainer"></div></div>');
     p.push('</div><!-- /ns-content -->');
 
-    p.push('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>');
-    p.push(`<script>window.__RECORDS__=${serialized};</script>`);
-    p.push(`<script>window.__ICONS__=${JSON.stringify(PROVIDER_ICONS)};</script>`);
+    p.push('<script nonce="' + assets.nonce + '" src="' + assets.chartJsUri + '"></script>');
+    p.push(`<script nonce="${assets.nonce}">window.__RECORDS__=${serialized};</script>`);
+    p.push(`<script nonce="${assets.nonce}">window.__ICONS__=${JSON.stringify(PROVIDER_ICONS)};</script>`);
 
-    p.push('<script>');
+    p.push('<script nonce="' + assets.nonce + '">');
     p.push('(function(){');
     p.push('var vscode=acquireVsCodeApi();');
     p.push('window.vscode=vscode;');
@@ -242,7 +246,7 @@ export class PromptHistoryViewProvider {
     p.push('    var ctx=r.fileContext?(r.fileContext.replace(/\\\\/g,"/").split("/").pop()||r.fileContext):"-";');
     p.push('    var turns=r.turnCount>1?"<span class=\\"turn-badge\\">&#128279; "+r.turnCount+" turns</span>":"<span style=\\"opacity:0.4;font-size:0.8em\\">1 turn</span>";');
     p.push('    var preview=r.promptPreview?("<span class=\\"preview-cell has-text\\" title=\\""+esc(r.promptPreview)+"\\">"+ esc(r.promptPreview.substring(0,80))+(r.promptPreview.length>80?"…":"")+"</span>"):"<span class=\\"preview-cell\\" style=\\"opacity:0.3\\">—</span>";');
-    p.push('    var openBtn=r.sourceFile?"<button class=\\"btn-open\\" onclick=\\"openFile("+i+")\\">Open log</button>":"";');
+    p.push('    var openBtn=r.sourceFile?"<button class=\\"btn-open\\" data-open=\\""+i+"\\">Open log</button>":"";');
     p.push('    return"<tr>"');
     p.push('      +"<td style=\\"color:var(--text-secondary);font-size:0.82em;white-space:nowrap\\">"+fmtTime(r.timestamp)+"</td>"');
     p.push('      +"<td>"+badge(r.provider)+"</td>"');
@@ -260,7 +264,7 @@ export class PromptHistoryViewProvider {
     p.push('}');
 
     p.push('function openFile(idx){var r=currentRows[idx];if(r&&r.sourceFile)vscode.postMessage({command:"openFile",path:r.sourceFile});}');
-    p.push('window.openFile=openFile;');
+    p.push('document.addEventListener("click",function(ev){var b=ev.target.closest("[data-open]");if(b)openFile(Number(b.getAttribute("data-open")));});');
     p.push('Chart.defaults.font.family="var(--font-primary)";');
     p.push('Chart.defaults.color="#c1c6d7";');
     p.push('updateSparkline();');

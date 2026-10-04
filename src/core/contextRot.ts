@@ -1,4 +1,5 @@
 import { Session } from '../types';
+import { resolveSessionContextWindow, DEFAULT_CONTEXT_WINDOW_TOKENS } from './contextWindow';
 import {
   ContextRotAnalysis,
   ContextTimelinePoint,
@@ -10,11 +11,27 @@ import {
   OptimizationProposal,
 } from '../types';
 
+/**
+ * Context pressure thresholds, as fractions of the resolved context window.
+ * They replace the former absolute 160K / 80K constants, which were 80% / 40%
+ * of a 200K window.
+ */
+const CTX_PRESSURE_HIGH = 0.8;
+const CTX_PRESSURE_MEDIUM = 0.4;
+
+/**
+ * Lost-in-the-middle onset, in absolute tokens. Attention degradation on
+ * mid-context content is an empirical property of the model, not a fraction of
+ * however large the window happens to be, so this floor stays absolute; only
+ * the ramp above it scales with the window.
+ */
+const LOST_IN_MIDDLE_ONSET_TOKENS = 60_000;
+
 /** Backward-compatible score shape (subset of ContextRotAnalysis) */
 export type ContextRotScore = Pick<
   ContextRotAnalysis,
   | 'score' | 'label' | 'turnsCount' | 'sessionAgeMinutes' | 'inputBloatFactor' | 'outputDeclineFactor'
-  | 'contextRunway' | 'cacheEfficiencyRate' | 'contextQualityScore'
+  | 'contextRunway' | 'cacheEfficiencyRate' | 'contextQualityScore' | 'contextWindowTokens'
 >;
 
 /**
@@ -31,6 +48,7 @@ export function computeContextRotScore(session: Session): ContextRotScore {
     inputBloatFactor: a.inputBloatFactor,
     outputDeclineFactor: a.outputDeclineFactor,
     contextRunway: a.contextRunway,
+    contextWindowTokens: a.contextWindowTokens,
     cacheEfficiencyRate: a.cacheEfficiencyRate,
     contextQualityScore: a.contextQualityScore,
   };
@@ -70,6 +88,12 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
   const peakEffectiveContext = session.peakEffectiveContextTokens
     ?? interactions.reduce((m, i) => Math.max(m, i.effectiveContextTokens ?? (i.inputTokens + i.cacheReadTokens + i.cacheWriteTokens)), 0);
 
+  // The context window this session's model actually has — a 200K assumption
+  // under-reported headroom on every 1M-window model and on every non-Claude
+  // provider the extension tracks.
+  const contextWindow = resolveSessionContextWindow(session);
+  const contextWindowTokens = contextWindow.tokens;
+
   let score = 0;
   if (turnsCount > 80) { score += 2; }
   else if (turnsCount > 40) { score += 1; }
@@ -84,8 +108,10 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
   if (outputDeclineFactor < 0.4) { score += 2; }
   else if (outputDeclineFactor < 0.65) { score += 1; }
 
-  if (peakEffectiveContext > 160_000) { score += 2; }
-  else if (peakEffectiveContext > 80_000) { score += 1; }
+  // Fractions of the window rather than absolute token counts: 160K/80K were
+  // 80%/40% of a 200K window, and 16%/8% of a 1M one.
+  if (peakEffectiveContext > contextWindowTokens * CTX_PRESSURE_HIGH) { score += 2; }
+  else if (peakEffectiveContext > contextWindowTokens * CTX_PRESSURE_MEDIUM) { score += 1; }
 
   score = Math.min(10, score);
   const label = score >= 7 ? 'stale' : score >= 4 ? 'warning' : 'healthy';
@@ -122,6 +148,7 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
   // ── Overload signals ───────────────────────────────────────────────────────
   const overloadSignals = detectOverloadSignals(
     session, turnsCount, sessionAgeMinutes, inputBloatFactor, outputDeclineFactor, peakEffectiveContext,
+    contextWindowTokens,
   );
 
   // ── Restart recommendation ─────────────────────────────────────────────────
@@ -140,7 +167,7 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
   const freshSessionBrief = buildFreshSessionBrief(session, overloadSignals);
 
   // ── Tier-1 metrics ─────────────────────────────────────────────────────────
-  const contextRunway = computeContextRunway(interactions);
+  const contextRunway = computeContextRunway(interactions, contextWindowTokens);
   const growthCurve = classifyGrowthCurve(interactions.map(i => ({
     inputTokens: i.effectiveContextTokens ?? (i.inputTokens + i.cacheReadTokens + i.cacheWriteTokens),
   })));
@@ -182,7 +209,9 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
 
   // ── Tier-3 metrics ─────────────────────────────────────────────────────────
   const contextBudgetAllocation = computeContextBudgetAllocation(session);
-  const lostInMiddleRisk = computeLostInMiddleRisk(session, turnsCount, cacheEfficiencyRate, peakEffectiveContext);
+  const lostInMiddleRisk = computeLostInMiddleRisk(
+    session, turnsCount, cacheEfficiencyRate, peakEffectiveContext, contextWindowTokens,
+  );
 
   if (lostInMiddleRisk > 60) {
     overloadSignals.push({
@@ -220,6 +249,8 @@ export function computeContextRotAnalysis(session: Session, allSessions: Session
     rehydrationChecklist,
     freshSessionBrief,
     contextRunway,
+    contextWindowTokens,
+    contextWindowSource: contextWindow.source,
     growthCurve,
     cacheEfficiencyRate,
     cacheThrashDetected,
@@ -246,6 +277,7 @@ function detectOverloadSignals(
   inputBloatFactor: number,
   outputDeclineFactor: number,
   peakEffectiveContext: number = 0,
+  contextWindowTokens: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): OverloadSignal[] {
   const signals: OverloadSignal[] = [];
 
@@ -289,19 +321,22 @@ function detectOverloadSignals(
   // Large static context — use peak effective context (input + cacheRead + cacheWrite) because
   // input_tokens alone is near-zero for cached Claude Code sessions and would never trigger.
   const ctxK = (peakEffectiveContext / 1000).toFixed(0);
-  if (peakEffectiveContext > 160_000) {
+  const highMark = contextWindowTokens * CTX_PRESSURE_HIGH;
+  const mediumMark = contextWindowTokens * CTX_PRESSURE_MEDIUM;
+  const markK = (n: number) => (n / 1000).toFixed(0);
+  if (peakEffectiveContext > highMark) {
     signals.push({
       type: 'large_static_context',
       severity: 'high',
       message: `Very large context (${ctxK}K tokens)`,
-      detail: 'Peak context window exceeded 160K tokens. Model attention degrades on early instructions and key details may be lost in the middle.',
+      detail: `Peak context exceeded ${markK(highMark)}K tokens — ${Math.round(CTX_PRESSURE_HIGH * 100)}% of this model's ${markK(contextWindowTokens)}K window. Model attention degrades on early instructions and key details may be lost in the middle.`,
     });
-  } else if (peakEffectiveContext > 80_000) {
+  } else if (peakEffectiveContext > mediumMark) {
     signals.push({
       type: 'large_static_context',
       severity: 'medium',
       message: `Large context (${ctxK}K tokens)`,
-      detail: 'Peak context window exceeded 80K tokens. Monitor for the "lost in the middle" effect on early system prompts.',
+      detail: `Peak context exceeded ${markK(mediumMark)}K tokens — ${Math.round(CTX_PRESSURE_MEDIUM * 100)}% of this model's ${markK(contextWindowTokens)}K window. Monitor for the "lost in the middle" effect on early system prompts.`,
     });
   }
 
@@ -620,8 +655,10 @@ function computeOptimizationProposals(
 
 // ── Tier-1 helpers ────────────────────────────────────────────────────────────
 
-function computeContextRunway(interactions: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; effectiveContextTokens?: number }[]): number | null {
-  const MODEL_LIMIT = 200_000;
+function computeContextRunway(
+  interactions: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; effectiveContextTokens?: number }[],
+  contextWindowTokens: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
+): number | null {
   if (interactions.length < 4) { return null; }
 
   const recent = interactions.slice(-6);
@@ -640,7 +677,7 @@ function computeContextRunway(interactions: { inputTokens: number; cacheReadToke
   const slope = (n * sumXY - sumX * sumY) / denom;
   if (slope <= 0) { return null; }
 
-  const remaining = MODEL_LIMIT - inputs[inputs.length - 1];
+  const remaining = contextWindowTokens - inputs[inputs.length - 1];
   if (remaining <= 0) { return 0; }
   return Math.max(0, Math.round(remaining / slope));
 }
@@ -715,12 +752,17 @@ function computeLostInMiddleRisk(
   turnsCount: number,
   cacheEfficiencyRate: number,
   peakEffectiveContext: number,
+  contextWindowTokens: number = DEFAULT_CONTEXT_WINDOW_TOKENS,
 ): number {
   // Use peak effective context (input + cacheRead + cacheWrite) — not totalInputTokens, which
   // is near-zero for cached Claude Code sessions and would never trigger this risk signal.
   const total = peakEffectiveContext > 0 ? peakEffectiveContext : session.totalInputTokens;
-  if (total < 60_000) { return 0; }
-  let risk = Math.min(100, (total - 60_000) / (200_000 - 60_000) * 100);
+  if (total < LOST_IN_MIDDLE_ONSET_TOKENS) { return 0; }
+  // Absolute onset, window-relative ramp: risk is how far past the onset the
+  // session has filled its own window, so a 1M-window model no longer reads as
+  // 100% at 200K.
+  const span = Math.max(1, contextWindowTokens - LOST_IN_MIDDLE_ONSET_TOKENS);
+  let risk = Math.min(100, (total - LOST_IN_MIDDLE_ONSET_TOKENS) / span * 100);
   if (turnsCount > 30) { risk = Math.min(100, risk * 1.2); }
   if (cacheEfficiencyRate > 60) { risk = Math.max(0, risk * 0.8); }
   return Math.round(risk);

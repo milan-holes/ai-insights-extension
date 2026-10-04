@@ -2,8 +2,15 @@ import * as vscode from 'vscode';
 import pricingData from '../data/modelPricing.json';
 import { AggregatedMetrics } from '../types';
 import { ConnectedGitHubUser } from '../core/githubAuth';
-import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS, webviewAssets, WebviewAssets, costSourceBadge, costSourceLabel, escapeHtml } from './navShared';
+import { modelHosting } from '../core/modelNames';
+import { calibrationSnapshot } from '../core/copilotBillingCalibration';
 import { designTokensCss } from './designSystem';
+import { CopilotQuotaView, computeBudgetPlan } from '../core/copilotQuota';
+
+const BUDGET_PLANNER_KEY = 'aiInsights.copilotBudgetPlanner';
+interface BudgetPlannerConfig { modelMultiplier: number; reserveCredits: number; }
+const DEFAULT_PLANNER_CONFIG: BudgetPlannerConfig = { modelMultiplier: 1, reserveCredits: 0 };
 
 interface ModelEntry {
   displayName: string;
@@ -21,6 +28,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
   google: 'Google',
   xai: 'xAI',
+  moonshot: 'Moonshot AI',
 };
 
 const PLAN_LABELS: Record<string, string> = {
@@ -35,12 +43,14 @@ export class PricingViewProvider {
   static readonly viewType = 'aiInsights.pricing';
   private static currentPanel: vscode.WebviewPanel | undefined;
 
-  static createPanel(context: vscode.ExtensionContext, metrics?: AggregatedMetrics, githubUser?: ConnectedGitHubUser): vscode.WebviewPanel {
+  static createPanel(context: vscode.ExtensionContext, metrics?: AggregatedMetrics, githubUser?: ConnectedGitHubUser, copilotQuota?: CopilotQuotaView): vscode.WebviewPanel {
     const logoPath = vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png');
 
     if (PricingViewProvider.currentPanel) {
       const logoUri = PricingViewProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      PricingViewProvider.currentPanel.webview.html = PricingViewProvider.getHtml(metrics, githubUser, logoUri);
+      PricingViewProvider.currentPanel.webview.html = PricingViewProvider.getHtml(
+        context, metrics, githubUser, logoUri, copilotQuota,
+        webviewAssets(PricingViewProvider.currentPanel.webview, context.extensionUri));
       PricingViewProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return PricingViewProvider.currentPanel;
     }
@@ -55,16 +65,31 @@ export class PricingViewProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = PricingViewProvider.getHtml(metrics, githubUser, logoUri);
+    panel.webview.html = PricingViewProvider.getHtml(context, metrics, githubUser, logoUri, copilotQuota,
+      webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage(
-      (message) => {
+      async (message) => {
         const navCmd = NAV_COMMANDS[message.command];
         if (navCmd) { vscode.commands.executeCommand(navCmd); return; }
         switch (message.command) {
           case 'connectGitHub': vscode.commands.executeCommand('aiInsights.connectGitHub'); break;
           case 'disconnectGitHub': vscode.commands.executeCommand('aiInsights.disconnectGitHub'); break;
           case 'enableCopilotRealCacheData': vscode.commands.executeCommand('aiInsights.enableCopilotRealCacheData'); break;
+          case 'setPlannerConfig': {
+            const clampNum = (v: unknown, lo: number, hi: number, def: number) => {
+              const n = Number(v);
+              return isFinite(n) && n > 0 ? Math.max(lo, Math.min(hi, n)) : def;
+            };
+            const cfg: BudgetPlannerConfig = {
+              modelMultiplier: clampNum(message.modelMultiplier, 0.01, 20, DEFAULT_PLANNER_CONFIG.modelMultiplier),
+              reserveCredits: Math.max(0, Number(message.reserveCredits) || 0),
+            };
+            await context.globalState.update(BUDGET_PLANNER_KEY, cfg);
+            panel.webview.html = PricingViewProvider.getHtml(context, metrics, githubUser, logoUri, copilotQuota,
+      webviewAssets(panel.webview, context.extensionUri));
+            break;
+          }
         }
       },
       undefined,
@@ -76,11 +101,11 @@ export class PricingViewProvider {
     return panel;
   }
 
-  static getHtml(metrics?: AggregatedMetrics, githubUser?: ConnectedGitHubUser, logoUri = ''): string {
+  static getHtml(context: vscode.ExtensionContext, metrics: AggregatedMetrics | undefined, githubUser: ConnectedGitHubUser | undefined, logoUri: string, copilotQuota: CopilotQuotaView | undefined, assets: WebviewAssets): string {
     const pricing = pricingData.pricing as Record<string, ModelEntry>;
     const lastUpdated = pricingData.metadata.lastUpdated;
 
-    const providerOrder = ['openai', 'anthropic', 'google', 'xai'];
+    const providerOrder = ['openai', 'anthropic', 'google', 'xai', 'moonshot'];
     const byProvider: Record<string, Array<[string, ModelEntry]>> = {};
     for (const [id, model] of Object.entries(pricing)) {
       if (!byProvider[model.provider]) { byProvider[model.provider] = []; }
@@ -164,7 +189,7 @@ export class PricingViewProvider {
       const copilotDebugLoggingEnabled = vscode.workspace.getConfiguration('github.copilot.chat').get<boolean>('agentDebugLog.fileLogging.enabled', false);
       const copilotHasUsage = copilotMonth.totalTokens > 0 || copilotLastMonth.totalTokens > 0;
       const enableRealCacheDataButton = (copilotChatExtensionInstalled && !copilotDebugLoggingEnabled && copilotHasUsage)
-        ? `<button class="btn-tab" onclick="window.vscode.postMessage({command:'enableCopilotRealCacheData'})" style="background:rgba(57,255,20,0.1);color:#39FF14;border:1px solid rgba(57,255,20,0.3);border-radius:6px;padding:6px 14px;margin-top:8px;cursor:pointer;">✅ Enable Real Cache Data</button>`
+        ? `<button class="btn-tab" data-post="enableCopilotRealCacheData" style="background:rgba(57,255,20,0.1);color:#39FF14;border:1px solid rgba(57,255,20,0.3);border-radius:6px;padding:6px 14px;margin-top:8px;cursor:pointer;">✅ Enable Real Cache Data</button>`
         : '';
 
       // Budget connect widget
@@ -205,8 +230,8 @@ export class PricingViewProvider {
               ${ghIconSvg}
               <span>Connected as <strong>@${githubUser.login}</strong> &middot; GitHub ${planLabel} &middot; $${githubUser.monthlyBudgetUsd}/month</span>
               <div style="margin-left:auto;display:flex;gap:6px;flex-shrink:0">
-                <button class="gh-btn" onclick="window.vscode.postMessage({command:'connectGitHub'})">Reconnect</button>
-                <button class="gh-btn gh-btn-danger" onclick="window.vscode.postMessage({command:'disconnectGitHub'})">Disconnect</button>
+                <button class="gh-btn" data-post="connectGitHub">Reconnect</button>
+                <button class="gh-btn gh-btn-danger" data-post="disconnectGitHub">Disconnect</button>
               </div>
             </div>
             ${creditsLine}
@@ -216,7 +241,7 @@ export class PricingViewProvider {
         budgetWidget = `<div class="github-connect">
           ${ghIconSvg}
           <span>Connect GitHub to auto-detect your Copilot plan and set the budget.</span>
-          <button class="gh-btn" style="margin-left:auto" onclick="window.vscode.postMessage({command:'connectGitHub'})">Connect GitHub</button>
+          <button class="gh-btn" style="margin-left:auto" data-post="connectGitHub">Connect GitHub</button>
         </div>`;
       }
 
@@ -237,20 +262,29 @@ export class PricingViewProvider {
         .filter(([, u]) => u.totalTokens > 0)
         .sort(([, a], [, b]) => b.totalCost - a.totalCost)
         .map(([model, u]) => {
+          // Local and unpriced own-key models cost nothing here: show a dash, not "$0.00",
+          // so they don't read as free Copilot usage.
+          const free = u.pricingSource === 'local' || u.pricingSource === 'unpriced';
           const pricingStr = u.pricingSource === 'official'
             ? `$${u.inputCostPerMillion?.toFixed(3)} / $${u.cachedInputCostPerMillion?.toFixed(3)} / $${u.outputCostPerMillion?.toFixed(3)}`
+            : u.pricingSource === 'local' ? 'local - not billed'
+            : u.pricingSource === 'unpriced' ? 'own key - rate unknown'
             : 'fallback';
+          const costCell = (usd: number) => free ? '–' : fmtCost(usd);
+          const hostingTag = u.pricingSource === 'local' ? '<span class="model-tag" title="Runs on your machine - not billed by GitHub">Local</span>'
+            : modelHosting(model) === 'byok' ? '<span class="model-tag" title="Served on your own API key - not billed by GitHub">Own key</span>'
+            : '';
           return `<tr>
-            <td class="data-text">${model}</td>
+            <td class="data-text">${escapeHtml(model)}${hostingTag}</td>
             <td class="data-text">${fmt(u.uncachedInputTokens)}</td>
             <td class="data-text">${fmt(u.cacheReadTokens)}</td>
             <td class="data-text">${fmt(u.outputTokens)}</td>
             <td class="data-text">${pricingStr}</td>
-            <td class="data-text">${fmtCost(u.inputCost)}</td>
-            <td class="data-text">${fmtCost(u.cachedInputCost)}</td>
-            <td class="data-text">${fmtCost(u.outputCost)}</td>
-            <td class="data-text">${fmtCredits(u.totalCost)}</td>
-            <td class="data-text">${fmtCost(u.totalCost)}</td>
+            <td class="data-text">${costCell(u.inputCost)}</td>
+            <td class="data-text">${costCell(u.cachedInputCost)}</td>
+            <td class="data-text">${costCell(u.outputCost)}</td>
+            <td class="data-text">${free ? '–' : fmtCredits(u.totalCost)}</td>
+            <td class="data-text">${costCell(u.totalCost)}</td>
           </tr>`;
         }).join('');
 
@@ -286,22 +320,110 @@ export class PricingViewProvider {
           <td class="data-text">${fmt(copilotMonth.cacheWriteTokens)}</td><td class="data-text">${fmtCost(cmWriteC)}</td>
           <td class="data-text" style="color:var(--text-secondary)">${fmt(copilotLastMonth.cacheWriteTokens)}</td><td class="data-text" style="color:var(--text-secondary)">${fmtCost(lmWriteC)}</td>
         </tr>` : ''}
-        <tr><td><strong>Total GitHub AI Credits</strong></td>
+        <tr><td><strong>Total GitHub AI Credits</strong> ${costSourceBadge(copilotMonth.costSource)}</td>
           <td class="data-text">${fmt(copilotMonth.totalTokens)}</td>
           <td class="data-text"><strong>${fmtCredits(copilotMonth.estimatedCost)} credits / ${fmtCost2(copilotMonth.estimatedCost)}</strong></td>
           <td class="data-text" style="color:var(--text-secondary)">${fmt(copilotLastMonth.totalTokens)}</td>
           <td class="data-text" style="color:var(--text-secondary)">${fmtCredits(copilotLastMonth.estimatedCost)} credits / ${fmtCost2(copilotLastMonth.estimatedCost)}</td>
         </tr>`;
 
+      // Cost provenance: how much of this month's figure is GitHub's own billed number
+      // rather than our estimate, and what the billed requests taught us about the rates.
+      const calibration = calibrationSnapshot();
+      const billedShare = copilotMonth.estimatedCost > 0
+        ? (copilotMonth.billedCost / copilotMonth.estimatedCost)
+        : 0;
+      const costAccuracyHtml = `
+        <details class="section" style="margin-bottom:24px;">
+          <summary style="cursor:pointer;font-weight:600;">${costSourceBadge(copilotMonth.costSource)} Where this cost number comes from - ${costSourceLabel(copilotMonth.costSource)}</summary>
+          <div style="font-size:0.9em;color:var(--text-secondary);line-height:1.6;margin-top:10px;">
+            <p>Copilot records its <strong>own billed cost</strong> for each request as
+            <code>copilotUsageNanoAiu</code> in its debug log (1 AIU = 1 AI credit = $0.01).
+            Where that is present we report it verbatim; where it is not, we estimate from
+            the published per-token rates.</p>
+            <p><strong>${(billedShare * 100).toFixed(0)}%</strong> of this month's figure
+            (${fmtCost2(copilotMonth.billedCost)} of ${fmtCost2(copilotMonth.estimatedCost)})
+            is GitHub's own billed number. The rest is estimated - usually because those
+            sessions have no debug log, or predate the field.</p>
+            <p>Two things make the estimate differ from the bill, both corrected here:
+            Copilot bills every <em>non-cached</em> input token at the <strong>cache-creation</strong>
+            rate (1.25x input for Anthropic models), and its per-token rates are not always the
+            published ones. The second is measured, not assumed - each billed request is
+            compared against what we would have predicted:</p>
+            ${calibration.length > 0 ? `
+            <table class="data-table" style="margin-top:10px;">
+              <thead><tr><th>Model</th><th>Billed requests seen</th><th>Rate factor</th><th>Spread</th></tr></thead>
+              <tbody>
+                ${calibration.map(c => `<tr>
+                  <td>${c.model}</td>
+                  <td class="data-text">${c.samples}</td>
+                  <td class="data-text">${c.factor.toFixed(4)}x</td>
+                  <td class="data-text">${c.spread < 0.0001 ? 'exact' : '±' + (c.spread * 100).toFixed(2) + '%'}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+            <p style="margin-top:10px;">A factor of <code>1.0000x</code> means the published rates
+            match the bill. A <strong>spread of "exact"</strong> means every billed request for that
+            model agreed on the same factor, so it is a rate difference rather than noise.</p>
+            ` : `<p>No billed requests have been read yet, so no factor has been measured and
+            none is assumed. Enable Copilot's
+            <code>github.copilot.chat.agentDebugLog.fileLogging.enabled</code> setting to let
+            this calibrate itself.</p>`}
+          </div>
+        </details>`;
+
+      // Real quota + budget planner — copilotQuota is the real GitHub-reported remaining/entitlement,
+      // distinct from the token-derived estimate above (see copilotQuota.md gap notes).
+      let quotaAndPlannerHtml = '';
+      if (copilotQuota) {
+        const plannerCfg = context.globalState.get<BudgetPlannerConfig>(BUDGET_PLANNER_KEY, DEFAULT_PLANNER_CONFIG);
+        const plan = computeBudgetPlan(copilotQuota, plannerCfg.modelMultiplier, plannerCfg.reserveCredits);
+        const quotaBarColor = copilotQuota.isOverQuota ? '#f38ba8' : copilotQuota.percentRemaining < 20 ? '#f9e2af' : '#39FF14';
+        const multiplierChip = (v: number, label: string) =>
+          `<button class="gh-btn" style="${Math.abs(plannerCfg.modelMultiplier - v) < 0.001 ? 'border-color:var(--primary);color:var(--primary);' : ''}" data-multiplier="${v}">${label}</button>`;
+
+        quotaAndPlannerHtml = `
+        <div class="section" style="margin-bottom:24px;">
+          <h2>🐙 Real Quota &amp; Budget Planner</h2>
+          <div class="cards" style="margin-bottom:16px;">
+            <div class="card" style="border-top:2px solid ${quotaBarColor}">
+              <div class="card-label">Copilot Quota Remaining</div>
+              <div class="card-value data-text">${copilotQuota.unlimited ? 'Unlimited' : `${fmt(copilotQuota.remaining)}/${fmt(copilotQuota.entitlement)}`}</div>
+              <div class="card-sub">${copilotQuota.unlimited ? copilotQuota.planLabel : (copilotQuota.isOverQuota ? `Over by ${fmt(copilotQuota.overageAmount)}` : `${copilotQuota.percentRemaining}% left`)} · resets ${copilotQuota.resetDays}d ${copilotQuota.resetHours}h</div>
+              ${copilotQuota.daysUntilExhaustion !== null ? `<div class="card-sub" style="margin-top:6px">~${copilotQuota.daysUntilExhaustion}d until exhausted at current pace</div>` : ''}
+            </div>
+          </div>
+          ${copilotQuota.unlimited ? '<p style="font-size:0.85em;color:var(--text-secondary);">Your plan has unlimited premium requests — nothing to plan against.</p>' : `
+          <p style="font-size:0.85em;color:var(--text-secondary);margin:0 0 12px;">How many requests/day you can make without running out before reset, at a given per-request cost multiplier (cheaper models cost less quota per request) and an optional reserve to leave untouched.</p>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+            <span style="font-size:0.85em;color:var(--text-secondary);">Model cost:</span>
+            ${multiplierChip(0.33, '0.33×')}${multiplierChip(1, '1×')}${multiplierChip(3, '3×')}
+            <input type="number" id="plannerMultiplier" min="0.01" max="20" step="0.01" value="${plannerCfg.modelMultiplier}" style="width:64px;background:var(--bg-surface-high);border:1px solid var(--border);border-radius:5px;padding:5px 8px;color:var(--text-primary);">
+            <span style="font-size:0.85em;color:var(--text-secondary);margin-left:10px;">Reserve:</span>
+            <input type="number" id="plannerReserve" min="0" step="1" value="${plannerCfg.reserveCredits}" style="width:80px;background:var(--bg-surface-high);border:1px solid var(--border);border-radius:5px;padding:5px 8px;color:var(--text-primary);">
+            <button class="gh-btn" data-action="savePlannerConfig">Update</button>
+          </div>
+          ${plan ? `
+          <div class="cards">
+            <div class="card"><div class="card-label">Sustainable / day</div><div class="card-value data-text">${plan.sustainableDailyRequests}</div><div class="card-sub">requests</div></div>
+            <div class="card"><div class="card-label">Sustainable / week</div><div class="card-value data-text">${plan.sustainableWeeklyRequests}</div><div class="card-sub">requests</div></div>
+            <div class="card"><div class="card-label">Days remaining</div><div class="card-value data-text">${plan.daysRemaining}</div><div class="card-sub">until reset</div></div>
+          </div>` : '<p style="font-size:0.85em;color:var(--text-secondary);">No budget to plan against right now.</p>'}
+          `}
+        </div>`;
+      }
+
       copilotUsageHtml = `
         ${budgetWidget}
         ${alertBanner}
+        ${costAccuracyHtml}
+        ${quotaAndPlannerHtml}
 
         <div class="cards" style="margin-bottom:28px;">
           <div class="card" style="border-top:2px solid var(--text-secondary)">
-            <div class="card-label">AI Credits This Month</div>
+            <div class="card-label">AI Credits This Month ${costSourceBadge(copilotMonth.costSource)}</div>
             <div class="card-value data-text">${fmtCredits(copilotMonth.estimatedCost)}</div>
-            <div class="card-sub">${fmtCost2(copilotMonth.estimatedCost)} spend</div>
+            <div class="card-sub">${fmtCost2(copilotMonth.estimatedCost)} spend · ${costSourceLabel(copilotMonth.costSource)}</div>
             <div class="card-sub" style="margin-top:6px">vs last month ${fmtDiff(copilotMonth.estimatedCost, copilotLastMonth.estimatedCost)}</div>
           </div>
           <div class="card">
@@ -371,6 +493,7 @@ export class PricingViewProvider {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+${assets.csp}
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Insights - GitHub Copilot</title>
 <style>
@@ -379,6 +502,7 @@ export class PricingViewProvider {
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:var(--font-primary); background:var(--bg-base); color:var(--text-primary); padding:0; line-height:1.6; }
   .data-text { font-family:var(--font-data); }
+  .model-tag { display:inline-block; margin-left:4px; padding:1px 6px; background:var(--bg-surface-high); border-radius:3px; font-size:0.78em; color:var(--text-secondary); }
   ${navCss()}
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:16px; }
   .card { background:var(--bg-surface); border:1px solid var(--border); border-radius:4px; padding:20px; transition:transform 0.2s; }
@@ -459,9 +583,36 @@ export class PricingViewProvider {
   <div class="footer">Pricing from official GitHub Copilot billing documentation. Models marked "Official" are listed at docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing.</div>
   </div><!-- /ns-content -->
 
-  <script>
+  <script nonce="${assets.nonce}">
     const vsc = typeof acquireVsCodeApi !== 'undefined' ? acquireVsCodeApi() : null;
     if (typeof window.vscode === 'undefined' && vsc) { window.vscode = vsc; }
+
+    document.addEventListener('click', function(ev) {
+      const el = ev.target.closest('[data-post],[data-multiplier],[data-action]');
+      if (!el) { return; }
+      const post = el.getAttribute('data-post');
+      if (post && window.vscode) { window.vscode.postMessage({ command: post }); return; }
+      const mult = el.getAttribute('data-multiplier');
+      if (mult !== null) { setMultiplier(Number(mult)); return; }
+      if (el.getAttribute('data-action') === 'savePlannerConfig') { savePlannerConfig(); }
+    });
+
+    function setMultiplier(v) {
+      const el = document.getElementById('plannerMultiplier');
+      if (el) { el.value = v; }
+      savePlannerConfig();
+    }
+    function savePlannerConfig() {
+      const m = document.getElementById('plannerMultiplier');
+      const r = document.getElementById('plannerReserve');
+      if (!vsc) { return; }
+      vsc.postMessage({
+        command: 'setPlannerConfig',
+        modelMultiplier: m ? m.value : 1,
+        reserveCredits: r ? r.value : 0,
+      });
+    }
+
     ${navJs()}
   </script>
 </body>

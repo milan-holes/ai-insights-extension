@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "out-test"],
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "src",
+    "noEmit": true
+  },
+  "include": ["src/electron/**/*.ts", "src/standalone/**/*.ts", "src/core/**/*.ts", "src/providers/**/*.ts", "src/types.ts"]
+}

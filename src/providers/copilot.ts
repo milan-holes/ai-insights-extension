@@ -15,8 +15,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseProvider } from './base';
-import { Session, Interaction } from '../types';
-import { calculateCost } from '../core/costEstimation';
+import { CostSource, PromptPrefixBreakdown, Session, Interaction } from '../types';
+import { calculateCost, resolveInteractionCost, weakestCostSource, USD_PER_AI_CREDIT } from '../core/costEstimation';
+import { modelHosting, modelVendor } from '../core/modelNames';
+import { nanoAiuToUsd, observeBilledRequest } from '../core/copilotBillingCalibration';
+import { readPromptPrefix } from '../core/copilotPrefix';
 import { extractContextRefs } from '../core/contextReferences';
 
 const COPILOT_EXTENSION_FOLDERS = [
@@ -25,6 +28,9 @@ const COPILOT_EXTENSION_FOLDERS = [
   'GitHub.copilot',
   'github.copilot',
 ];
+
+/** Session-bearing subdirectories inside a workspace's Copilot extension folder. */
+const COPILOT_WORKSPACE_SUBDIRS = ['chatSessions', 'transcripts', 'debug-logs'];
 
 const NON_SESSION_PATTERNS = [
   'embeddings',
@@ -41,6 +47,58 @@ const NON_SESSION_PATTERNS = [
 const UNSAFE_PATH_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export type CopilotCacheConvention = 'inclusive' | 'exclusive';
+
+/** One `llm_request` telemetry event from `debug-logs/<session>/main.jsonl`. */
+interface DebugLogEvent {
+  ts: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  model: string;
+  /**
+   * GitHub's own billed cost for this request, from `attrs.copilotUsageNanoAiu`.
+   * Undefined when the field is absent (older Copilot versions).
+   */
+  billedUsd?: number;
+}
+
+/**
+ * Session cost for a Copilot session, preferring GitHub's own billed figure over our
+ * estimate turn by turn.
+ *
+ * Copilot bills non-cached input at the cache-creation rate, so estimates here use the
+ * `copilot` billing shape - see core/costEstimation.ts. `costSource` reports the weakest
+ * source that contributed, so a session is only called `billed` when nothing in it had to
+ * be estimated.
+ */
+function resolveCopilotSessionCost(interactions: Interaction[]): {
+  estimatedCostUsd: number;
+  costSource: CostSource;
+  billedCostUsd?: number;
+  billedInteractionCount: number;
+} {
+  let total = 0;
+  let billedTotal = 0;
+  let billedCount = 0;
+  const sources: CostSource[] = [];
+
+  for (const i of interactions) {
+    const { usd, source } = resolveInteractionCost('copilot', i);
+    total += usd;
+    sources.push(source);
+    if (source === 'billed') {
+      billedTotal += usd;
+      billedCount += 1;
+    }
+  }
+
+  return {
+    estimatedCostUsd: total,
+    costSource: weakestCostSource(sources),
+    billedCostUsd: billedCount > 0 ? billedTotal : undefined,
+    billedInteractionCount: billedCount,
+  };
+}
 
 export class CopilotProvider extends BaseProvider {
   readonly id = 'copilot' as const;
@@ -62,6 +120,65 @@ export class CopilotProvider extends BaseProvider {
     this.cacheEstimationEnabled = cacheEstimationEnabled;
     this.cacheEstimationConvention = cacheEstimationConvention;
     this.sessionDirs = this.buildSessionPaths(additionalPaths.map(p => this.expandHome(p)));
+  }
+
+  // ── Per-scan caches ─────────────────────────────────────────────────────────
+  // Discovery and parsing probe the same handful of directories once per session
+  // file. On WSL those probes land on the 9p /mnt/c mount where a single
+  // existsSync costs ~0.6ms, so the repeats dominated refresh time. These caches
+  // live for one scan only and are dropped by beginScan().
+
+  /** Directory path -> exists. */
+  private dirExistsCache = new Map<string, boolean>();
+  /** sessionId -> candidate debug-log roots that exist, built once per scan. */
+  private debugLogIndex: Map<string, string[]> | null = null;
+  /** workspaceStorage hash dir -> resolved workspace label. */
+  private workspaceCache = new Map<string, string>();
+  /** File path -> stat, seeded by parseSessionFile so each file is stat'd once. */
+  private statCache = new Map<string, fs.Stats | null>();
+  /** Directory -> entry names, null when unreadable. Shared by discovery and the debug-log index. */
+  private dirListCache = new Map<string, Set<string> | null>();
+
+  /** Drop per-scan caches. Called by the extension before each refresh. */
+  beginScan(): void {
+    this.dirExistsCache.clear();
+    this.debugLogIndex = null;
+    this.workspaceCache.clear();
+    this.statCache.clear();
+    this.dirListCache.clear();
+  }
+
+  /**
+   * readdir memoized for one scan. Discovery and the debug-log index both walk
+   * the same workspace roots, so without this each root is listed twice.
+   */
+  private listDir(dir: string): Set<string> | null {
+    const hit = this.dirListCache.get(dir);
+    if (hit !== undefined) { return hit; }
+    let names: Set<string> | null = null;
+    try { names = new Set(fs.readdirSync(dir)); } catch { names = null; }
+    this.dirListCache.set(dir, names);
+    return names;
+  }
+
+  /** statSync memoized for the duration of one scan. */
+  private statOf(filePath: string): fs.Stats | null {
+    const hit = this.statCache.get(filePath);
+    if (hit !== undefined) { return hit; }
+    let stats: fs.Stats | null = null;
+    try { stats = fs.statSync(filePath); } catch { stats = null; }
+    this.statCache.set(filePath, stats);
+    return stats;
+  }
+
+  /** existsSync for a directory, memoized for the duration of one scan. */
+  private dirExists(dir: string): boolean {
+    const hit = this.dirExistsCache.get(dir);
+    if (hit !== undefined) { return hit; }
+    let exists = false;
+    try { exists = fs.statSync(dir).isDirectory(); } catch { exists = false; }
+    this.dirExistsCache.set(dir, exists);
+    return exists;
   }
 
   private buildSessionPaths(additionalPaths: string[]): string[] {
@@ -155,24 +272,34 @@ export class CopilotProvider extends BaseProvider {
 
     for (const dir of this.sessionDirs) {
       try {
-        if (!fs.existsSync(dir)) { continue; }
-
         if (dir.includes('workspaceStorage')) {
-          // Scan each workspace folder for chatSessions
+          // Scan each workspace folder for chatSessions.
+          //
+          // One readdir of the workspace root (and of each Copilot extension
+          // folder that is actually present) replaces blind existsSync probes of
+          // 13 fixed candidate paths per workspace. With ~40 workspaces that was
+          // ~550 probes per refresh, nearly all on paths that do not exist.
           const workspaces = fs.readdirSync(dir, { withFileTypes: true });
           for (const ws of workspaces) {
             if (!ws.isDirectory()) { continue; }
             const workspaceRoot = path.join(dir, ws.name);
-            const candidateDirs = [
-              path.join(workspaceRoot, 'chatSessions'),
-              ...COPILOT_EXTENSION_FOLDERS.flatMap(folder => [
-                path.join(workspaceRoot, folder, 'chatSessions'),
-                path.join(workspaceRoot, folder, 'transcripts'),
-                path.join(workspaceRoot, folder, 'debug-logs'),
-              ]),
-            ];
-            for (const chatDir of candidateDirs) {
-              this.addSessionFilesFromDir(files, chatDir);
+
+            const present = this.listDir(workspaceRoot);
+            if (!present) { continue; }
+
+            if (present.has('chatSessions')) {
+              this.addSessionFilesFromDir(files, path.join(workspaceRoot, 'chatSessions'));
+            }
+            for (const folder of COPILOT_EXTENSION_FOLDERS) {
+              if (!present.has(folder)) { continue; }
+              const folderRoot = path.join(workspaceRoot, folder);
+              const inFolder = this.listDir(folderRoot);
+              if (!inFolder) { continue; }
+              for (const sub of COPILOT_WORKSPACE_SUBDIRS) {
+                if (inFolder.has(sub)) {
+                  this.addSessionFilesFromDir(files, path.join(folderRoot, sub));
+                }
+              }
             }
           }
         } else if (dir.includes(`${path.sep}.copilot${path.sep}session-state`)) {
@@ -194,7 +321,10 @@ export class CopilotProvider extends BaseProvider {
     return [...files];
   }
 
-  async parseSessionFile(filePath: string): Promise<Session | null> {
+  async parseSessionFile(filePath: string, stats?: fs.Stats): Promise<Session | null> {
+    // The refresh loop already stat'd this file to apply the lookback cutoff;
+    // reuse it so getFileFallbackDate does not stat the same path again.
+    if (stats) { this.statCache.set(filePath, stats); }
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
 
@@ -309,7 +439,7 @@ export class CopilotProvider extends BaseProvider {
       const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
       const totalCacheReadTokens = interactions.reduce((s, i) => s + i.cacheReadTokens, 0);
       const totalCacheWriteTokens = interactions.reduce((s, i) => s + i.cacheWriteTokens, 0);
-      const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
+      const cost = resolveCopilotSessionCost(interactions);
 
       // Extract title from data or first message
       let title = data.title;
@@ -337,7 +467,11 @@ export class CopilotProvider extends BaseProvider {
         workspace: this.extractWorkspace(filePath),
         sourceFile: filePath,
         title,
-        estimatedCostUsd,
+        estimatedCostUsd: cost.estimatedCostUsd,
+        promptPrefix: this.readSessionPromptPrefix(filePath, interactions) ?? undefined,
+        costSource: cost.costSource,
+        billedCostUsd: cost.billedCostUsd,
+        billedInteractionCount: cost.billedInteractionCount,
         cacheTokensEstimated: interactions.some(i => i.cacheTokensEstimated),
       };
     } catch {
@@ -425,7 +559,7 @@ export class CopilotProvider extends BaseProvider {
       const totalOutputTokens = interactions.reduce((s, i) => s + i.outputTokens, 0);
       const totalCacheReadTokens = interactions.reduce((s, i) => s + i.cacheReadTokens, 0);
       const totalCacheWriteTokens = interactions.reduce((s, i) => s + i.cacheWriteTokens, 0);
-      const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
+      const cost = resolveCopilotSessionCost(interactions);
 
       return {
         id: path.basename(filePath, '.jsonl'),
@@ -443,7 +577,11 @@ export class CopilotProvider extends BaseProvider {
         models: [...new Set(interactions.map(i => i.model))],
         workspace: this.extractWorkspace(filePath),
         sourceFile: filePath,
-        estimatedCostUsd,
+        estimatedCostUsd: cost.estimatedCostUsd,
+        promptPrefix: this.readSessionPromptPrefix(filePath, interactions) ?? undefined,
+        costSource: cost.costSource,
+        billedCostUsd: cost.billedCostUsd,
+        billedInteractionCount: cost.billedInteractionCount,
         cacheTokensEstimated: interactions.some(i => i.cacheTokensEstimated),
       };
     } catch {
@@ -546,10 +684,14 @@ export class CopilotProvider extends BaseProvider {
     const hasRealCacheData = this.attachRealCacheData(filePath, interactions, hasRealPromptTokens);
     this.applyCacheHeuristic(interactions, hasRealPromptTokens, hasRealCacheData);
 
-    const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
+    const cost = resolveCopilotSessionCost(interactions);
 
     const session = this.buildSession(filePath, path.basename(filePath, '.jsonl'), startTime, endTime, interactions);
-    session.estimatedCostUsd = estimatedCostUsd;
+    session.estimatedCostUsd = cost.estimatedCostUsd;
+    session.promptPrefix = this.readSessionPromptPrefix(filePath, interactions) ?? undefined;
+    session.costSource = cost.costSource;
+    session.billedCostUsd = cost.billedCostUsd;
+    session.billedInteractionCount = cost.billedInteractionCount;
     session.cacheTokensEstimated = interactions.some(i => i.cacheTokensEstimated);
     session.title = (state as any).title;
     if (!session.title && requests[0]) {
@@ -644,10 +786,14 @@ export class CopilotProvider extends BaseProvider {
     }
 
     if (interactions.length === 0) { return null; }
-    const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
+    const cost = resolveCopilotSessionCost(interactions);
 
     const session = this.buildSession(filePath, sessionId, startTime || fallbackTimestamp, endTime, interactions);
-    session.estimatedCostUsd = estimatedCostUsd;
+    session.estimatedCostUsd = cost.estimatedCostUsd;
+    session.promptPrefix = this.readSessionPromptPrefix(filePath, interactions) ?? undefined;
+    session.costSource = cost.costSource;
+    session.billedCostUsd = cost.billedCostUsd;
+    session.billedInteractionCount = cost.billedInteractionCount;
     return session;
   }
 
@@ -809,10 +955,14 @@ export class CopilotProvider extends BaseProvider {
     const hasRealCacheData = this.attachRealCacheData(filePath, interactions, hasRealPromptTokens);
     this.applyCacheHeuristic(interactions, hasRealPromptTokens, hasRealCacheData);
 
-    const estimatedCostUsd = interactions.reduce((sum, i) => sum + calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens), 0);
+    const cost = resolveCopilotSessionCost(interactions);
 
     const session = this.buildSession(filePath, sessionId, startTime || fallbackTimestamp, endTime, interactions);
-    session.estimatedCostUsd = estimatedCostUsd;
+    session.estimatedCostUsd = cost.estimatedCostUsd;
+    session.promptPrefix = this.readSessionPromptPrefix(filePath, interactions) ?? undefined;
+    session.costSource = cost.costSource;
+    session.billedCostUsd = cost.billedCostUsd;
+    session.billedInteractionCount = cost.billedInteractionCount;
     session.cacheTokensEstimated = interactions.some(i => i.cacheTokensEstimated);
     if (firstUserMessage) {
       session.title = firstUserMessage.split('\n')[0].substring(0, 80);
@@ -827,8 +977,14 @@ export class CopilotProvider extends BaseProvider {
    * `.../<ext-folder>/debug-logs/{sessionId}/main.jsonl`). `attrs.cachedTokens` there is the
    * portion of `attrs.inputTokens` already served from the model provider's prompt cache
    * (mirrors OpenAI's `usage.prompt_tokens_details.cached_tokens`, a subset of the total) -
-   * there's no separate cache-write/creation count, matching OpenAI-style automatic caching
-   * where writes aren't billed or reported separately.
+   * there's no separate cache-write/creation count.
+   *
+   * That absence is a reporting gap, not a billing one: calibrating against
+   * `copilotUsageNanoAiu` shows Copilot *does* bill the uncached remainder at the
+   * cache-creation rate, which for Anthropic models is 1.25x input. `cacheWriteTokens` is
+   * therefore left at 0 here (we cannot measure it) and the cost path infers it from
+   * `inputTokens - cachedTokens` instead - see core/costEstimation.ts's `copilot` shape.
+   * Also reads `attrs.copilotUsageNanoAiu`, GitHub's own billed cost for the request.
    *
    * Buckets each event into whichever interaction most recently started before it (by
    * timestamp), since a single user turn can trigger several LLM calls in agent mode and the
@@ -836,6 +992,32 @@ export class CopilotProvider extends BaseProvider {
    * `hasRealCacheData` flag per interaction so `applyCacheHeuristic` never overwrites a bucket
    * that already reflects real telemetry, even when its real cache count happens to be zero.
    */
+  /**
+   * Reads the fixed prompt prefix (system prompt + tool catalog) from the
+   * `system_prompt_*.json` / `tools_*.json` sidecars Copilot writes next to the debug
+   * log, and attributes the catalog to tools this session actually called.
+   *
+   * Returns null whenever the sidecars aren't there - they're written for only some
+   * sessions, so a missing prefix is normal and must not be reported as zero.
+   */
+  private readSessionPromptPrefix(filePath: string, interactions: Interaction[]): PromptPrefixBreakdown | null {
+    const sessionId = path.basename(filePath, path.extname(filePath));
+    const debugLogPath = this.findDebugLogPath(filePath, sessionId);
+    if (!debugLogPath) { return null; }
+
+    const calledTools = new Set<string>();
+    for (const interaction of interactions) {
+      for (const tool of interaction.toolCalls) { calledTools.add(tool); }
+    }
+
+    const withInput = interactions.filter(i => i.inputTokens > 0);
+    const meanInputTokens = withInput.length > 0
+      ? withInput.reduce((sum, i) => sum + i.inputTokens, 0) / withInput.length
+      : undefined;
+
+    return readPromptPrefix(debugLogPath, calledTools, meanInputTokens);
+  }
+
   private attachRealCacheData(filePath: string, interactions: Interaction[], hasRealPromptTokens: boolean[]): boolean[] {
     const hasRealCacheData = interactions.map(() => false);
     if (interactions.length === 0) { return hasRealCacheData; }
@@ -847,17 +1029,29 @@ export class CopilotProvider extends BaseProvider {
       .map((_, idx) => idx)
       .sort((a, b) => interactions[a].timestamp.getTime() - interactions[b].timestamp.getTime());
 
-    const buckets = new Map<number, { input: number; output: number; cached: number; models: Map<string, number> }>();
+    const buckets = new Map<number, {
+      input: number; output: number; cached: number;
+      models: Map<string, number>;
+      billedUsd: number; billedEvents: number; totalEvents: number;
+    }>();
 
     for (const ev of debugEvents) {
       let target = order[0];
       for (const idx of order) {
         if (interactions[idx].timestamp.getTime() <= ev.ts) { target = idx; } else { break; }
       }
-      const bucket = buckets.get(target) ?? { input: 0, output: 0, cached: 0, models: new Map<string, number>() };
+      const bucket = buckets.get(target) ?? {
+        input: 0, output: 0, cached: 0, models: new Map<string, number>(),
+        billedUsd: 0, billedEvents: 0, totalEvents: 0,
+      };
       bucket.input += ev.inputTokens;
       bucket.output += ev.outputTokens;
       bucket.cached += ev.cachedTokens;
+      bucket.totalEvents += 1;
+      if (ev.billedUsd !== undefined) {
+        bucket.billedUsd += ev.billedUsd;
+        bucket.billedEvents += 1;
+      }
       if (ev.model) { bucket.models.set(ev.model, (bucket.models.get(ev.model) ?? 0) + 1); }
       buckets.set(target, bucket);
     }
@@ -869,9 +1063,16 @@ export class CopilotProvider extends BaseProvider {
       interaction.cacheReadTokens = bucket.cached;
       interaction.cacheWriteTokens = 0;
       interaction.cacheTokensEstimated = false;
+      // Only claim an exact cost when every request behind this turn reported one;
+      // a partial sum would silently under-report an agent turn's real spend.
+      interaction.billedCostUsd = bucket.billedEvents > 0 && bucket.billedEvents === bucket.totalEvents
+        ? bucket.billedUsd
+        : undefined;
       interaction.totalTokens = interaction.inputTokens + interaction.outputTokens + interaction.thinkingTokens;
       interaction.effectiveContextTokens = interaction.inputTokens + interaction.cacheReadTokens + interaction.cacheWriteTokens;
-      if (bucket.models.size > 0) {
+      // The debug log names the bare model; keep the vendor-prefixed id of a non-Copilot
+      // model rather than letting it be priced as the hosted model of the same name.
+      if (bucket.models.size > 0 && modelHosting(interaction.model) === 'provider') {
         const bestModel = [...bucket.models.entries()].sort((a, b) => b[1] - a[1])[0][0];
         interaction.model = this.normalizeModelId(bestModel);
       }
@@ -894,26 +1095,47 @@ export class CopilotProvider extends BaseProvider {
    * `chatSessions` (written by the local UI process) and `transcripts`/`debug-logs` (written by
    * the remote extension host) live on two different filesystems under the same hash.
    */
-  private readDebugLogEvents(filePath: string): Array<{ ts: number; inputTokens: number; outputTokens: number; cachedTokens: number; model: string }> {
+  private readDebugLogEvents(filePath: string): DebugLogEvent[] {
     try {
       const sessionId = path.basename(filePath, path.extname(filePath));
       const debugLogPath = this.findDebugLogPath(filePath, sessionId);
       if (!debugLogPath) { return []; }
 
       const content = fs.readFileSync(debugLogPath, 'utf-8');
-      const events: Array<{ ts: number; inputTokens: number; outputTokens: number; cachedTokens: number; model: string }> = [];
+      const events: DebugLogEvent[] = [];
       for (const line of content.trim().split('\n')) {
         if (!line.trim()) { continue; }
         try {
           const event = JSON.parse(line);
           if (event?.type !== 'llm_request') { continue; }
           const attrs = event.attrs ?? {};
+          const inputTokens = typeof attrs.inputTokens === 'number' ? attrs.inputTokens : 0;
+          const outputTokens = typeof attrs.outputTokens === 'number' ? attrs.outputTokens : 0;
+          const cachedTokens = typeof attrs.cachedTokens === 'number' ? attrs.cachedTokens : 0;
+          const model = typeof attrs.model === 'string' ? attrs.model : '';
+          // GitHub's own billed cost for this request. Exact, and present on every
+          // token-bearing request in current Copilot versions.
+          const billedUsd = typeof attrs.copilotUsageNanoAiu === 'number' && attrs.copilotUsageNanoAiu > 0
+            ? nanoAiuToUsd(attrs.copilotUsageNanoAiu, USD_PER_AI_CREDIT)
+            : undefined;
+
+          // Feed the calibration oracle before anyone asks for an estimate: compare what
+          // we would have predicted at list rates against what GitHub charged.
+          if (billedUsd !== undefined && model) {
+            const predicted = calculateCost(model, inputTokens, outputTokens, cachedTokens, 0, {
+              shape: 'copilot',
+              calibrate: false,
+            });
+            observeBilledRequest(model, predicted, billedUsd);
+          }
+
           events.push({
             ts: typeof event.ts === 'number' ? event.ts : 0,
-            inputTokens: typeof attrs.inputTokens === 'number' ? attrs.inputTokens : 0,
-            outputTokens: typeof attrs.outputTokens === 'number' ? attrs.outputTokens : 0,
-            cachedTokens: typeof attrs.cachedTokens === 'number' ? attrs.cachedTokens : 0,
-            model: typeof attrs.model === 'string' ? attrs.model : '',
+            inputTokens,
+            outputTokens,
+            cachedTokens,
+            model,
+            billedUsd,
           });
         } catch {
           // Skip malformed telemetry lines.
@@ -935,23 +1157,67 @@ export class CopilotProvider extends BaseProvider {
    * Remote-WSL/SSH/Codespaces case where the client-side `chatSessions` file and the remote
    * host's `debug-logs` sit under the same hash on two entirely different filesystems.
    */
-  private findDebugLogPath(filePath: string, sessionId: string): string | null {
-    const structuralExtFolderRoot = path.dirname(path.dirname(filePath));
-    const structuralCandidate = path.join(structuralExtFolderRoot, 'debug-logs', sessionId, 'main.jsonl');
-    if (fs.existsSync(structuralCandidate)) { return structuralCandidate; }
+  /**
+   * Index every debug-log directory once per scan: sessionId -> the debug-logs
+   * roots that contain it.
+   *
+   * Previously this was probed per session file, looping every workspaceStorage
+   * root x every extension folder and existsSync-ing each candidate. That is
+   * O(files x roots) syscalls - ~1950 existsSync calls for 95 files here, 1.2s
+   * of the refresh, nearly all of them on paths that do not exist. One readdir
+   * per debug-logs root replaces all of it.
+   */
+  private getDebugLogIndex(): Map<string, string[]> {
+    if (this.debugLogIndex) { return this.debugLogIndex; }
+    const index = new Map<string, string[]>();
 
-    const normalized = filePath.replace(/\\/g, '/');
-    const hashMatch = normalized.match(/\/workspaceStorage\/([^/]+)\//);
-    if (!hashMatch) { return null; }
-    const hash = hashMatch[1];
-
+    const roots: string[] = [];
     for (const dir of this.sessionDirs) {
       if (!dir.replace(/\\/g, '/').endsWith('/workspaceStorage')) { continue; }
-      const workspaceRoot = path.join(dir, hash);
-      for (const folder of COPILOT_EXTENSION_FOLDERS) {
-        const candidate = path.join(workspaceRoot, folder, 'debug-logs', sessionId, 'main.jsonl');
-        if (candidate !== structuralCandidate && fs.existsSync(candidate)) { return candidate; }
+      let hashes: fs.Dirent[];
+      try { hashes = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+      for (const hashDir of hashes) {
+        if (!hashDir.isDirectory()) { continue; }
+        const workspaceRoot = path.join(dir, hashDir.name);
+        const present = this.listDir(workspaceRoot);
+        if (!present) { continue; }
+        for (const folder of COPILOT_EXTENSION_FOLDERS) {
+          if (!present.has(folder)) { continue; }
+          const inFolder = this.listDir(path.join(workspaceRoot, folder));
+          if (!inFolder?.has('debug-logs')) { continue; }
+          roots.push(path.join(workspaceRoot, folder, 'debug-logs'));
+        }
       }
+    }
+
+    for (const root of roots) {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) { continue; }
+        const existing = index.get(entry.name);
+        if (existing) { existing.push(root); } else { index.set(entry.name, [root]); }
+      }
+    }
+
+    this.debugLogIndex = index;
+    return index;
+  }
+
+  private findDebugLogPath(filePath: string, sessionId: string): string | null {
+    const roots = this.getDebugLogIndex().get(sessionId);
+    if (!roots || roots.length === 0) { return null; }
+
+    // A log living under this session file's own extension folder still wins, so
+    // precedence matches the previous structural-candidate-first behaviour.
+    const structuralRoot = path.join(path.dirname(path.dirname(filePath)), 'debug-logs');
+    const ordered = roots.includes(structuralRoot)
+      ? [structuralRoot, ...roots.filter(r => r !== structuralRoot)]
+      : roots;
+
+    for (const root of ordered) {
+      const candidate = path.join(root, sessionId, 'main.jsonl');
+      if (fs.existsSync(candidate)) { return candidate; }
     }
     return null;
   }
@@ -985,12 +1251,19 @@ export class CopilotProvider extends BaseProvider {
     const wsIdx = parts.indexOf('workspaceStorage');
     if (wsIdx >= 0 && wsIdx + 1 < parts.length) {
       const hashDir = parts.slice(0, wsIdx + 2).join(path.sep);
+      // Every session file in a workspace resolves to the same workspace.json,
+      // so read it once per hash dir rather than once per file.
+      const cached = this.workspaceCache.get(hashDir);
+      if (cached !== undefined) { return cached; }
+
+      let label = parts[wsIdx + 1].substring(0, 8) + '...';
       try {
         const wsJson = JSON.parse(fs.readFileSync(path.join(hashDir, 'workspace.json'), 'utf-8'));
         const uri: string = wsJson.folder || wsJson.workspace;
-        if (uri) { return this.resolveVSCodeUri(uri); }
-      } catch { /* fall through */ }
-      return parts[wsIdx + 1].substring(0, 8) + '...';
+        if (uri) { label = this.resolveVSCodeUri(uri); }
+      } catch { /* keep the hash-prefix fallback */ }
+      this.workspaceCache.set(hashDir, label);
+      return label;
     }
     return 'global';
   }
@@ -1097,8 +1370,9 @@ export class CopilotProvider extends BaseProvider {
   }
 
   private addSessionFilesFromDir(files: Set<string>, dir: string): void {
+    // No existsSync guard: readdirSync throws ENOENT for a missing directory and
+    // the catch below already handles it, so the probe was a wasted syscall.
     try {
-      if (!fs.existsSync(dir)) { return; }
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isFile()) { continue; }
@@ -1112,7 +1386,6 @@ export class CopilotProvider extends BaseProvider {
 
   private addSessionFilesRecursively(files: Set<string>, dir: string): void {
     try {
-      if (!fs.existsSync(dir)) { return; }
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
@@ -1128,7 +1401,6 @@ export class CopilotProvider extends BaseProvider {
 
   private addCopilotCliSessionFiles(files: Set<string>, dir: string): void {
     try {
-      if (!fs.existsSync(dir)) { return; }
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const fullPath = path.join(dir, entry.name);
         if (entry.isFile() && this.isSessionFilename(entry.name)) {
@@ -1209,6 +1481,17 @@ export class CopilotProvider extends BaseProvider {
   }
 
   private getModelFromRequest(request: any, fallback: string): string {
+    // A chat served by a non-Copilot model (Ollama, a llama.cpp server behind the
+    // OpenAI-compatible endpoint, the user's own API key) keeps its `<vendor>/` prefix so
+    // pricing can tell it apart - see modelHosting() in core/modelNames.ts. When the id
+    // and the vendor are stored separately, put them back together.
+    const rawVendor = request?.selectedModel?.metadata?.vendor;
+    const vendor = typeof rawVendor === 'string' && rawVendor.trim() && !/^(github-)?copilot$/i.test(rawVendor.trim())
+      ? rawVendor.trim().toLowerCase()
+      : null;
+    const withVendor = (model: string): string =>
+      vendor && modelVendor(model) === null ? `${vendor}/${model}` : model;
+
     const candidates = [
       request?.modelId,
       request?.resolvedModel,
@@ -1218,14 +1501,16 @@ export class CopilotProvider extends BaseProvider {
       request?.result?.metadata?.modelId,
       request?.result?.metadata?.resolvedModel,
       request?.response?.model,
-      fallback,
     ];
     for (const candidate of candidates) {
       if (typeof candidate === 'string' && candidate.trim()) {
         const normalized = this.normalizeModelId(candidate);
-        if (normalized !== 'auto') { return normalized; }
+        if (normalized !== 'auto') { return withVendor(normalized); }
       }
     }
+    // Never guess a Copilot model for a chat a different vendor served.
+    if (vendor) { return `${vendor}/unknown`; }
+    if (fallback.trim() && this.normalizeModelId(fallback) !== 'auto') { return this.normalizeModelId(fallback); }
 
     // For auto mode, extract the actual resolved model from toolCallRounds phaseModelId
     const rounds: any[] = request?.result?.metadata?.toolCallRounds;
@@ -1375,15 +1660,12 @@ export class CopilotProvider extends BaseProvider {
   }
 
   private getFileFallbackDate(filePath: string): Date {
-    try {
-      const stats = fs.statSync(filePath);
-      if (stats.birthtimeMs > 0 && stats.birthtimeMs < stats.mtimeMs) {
-        return stats.birthtime;
-      }
-      return stats.mtime;
-    } catch {
-      return new Date(0);
+    const stats = this.statOf(filePath);
+    if (!stats) { return new Date(0); }
+    if (stats.birthtimeMs > 0 && stats.birthtimeMs < stats.mtimeMs) {
+      return stats.birthtime;
     }
+    return stats.mtime;
   }
 
   private resolveVSCodeUri(uri: string): string {

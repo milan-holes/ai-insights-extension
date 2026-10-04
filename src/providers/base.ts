@@ -5,6 +5,7 @@
  */
 
 import * as os from 'os';
+import * as fs from 'fs';
 import { Session, ProviderId } from '../types';
 
 export abstract class BaseProvider {
@@ -20,8 +21,17 @@ export abstract class BaseProvider {
   /**
    * Parse a single session file into our unified Session format.
    * Returns null if the file cannot be parsed or is invalid.
+   *
+   * `stats` is the caller's already-taken stat of the file. Providers that need
+   * file timestamps should prefer it over stat-ing the path a second time.
    */
-  abstract parseSessionFile(filePath: string): Promise<Session | null>;
+  abstract parseSessionFile(filePath: string, stats?: fs.Stats): Promise<Session | null>;
+
+  /**
+   * Called once before each discovery+parse pass so providers can drop caches
+   * they memoize for the duration of a single scan. Default is a no-op.
+   */
+  beginScan(): void { /* providers override when they cache per scan */ }
 
   /**
    * Get all session directories this provider checks.

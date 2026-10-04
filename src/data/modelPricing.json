@@ -1,11 +1,12 @@
 {
   "metadata": {
-    "lastUpdated": "2026-07-01",
+    "lastUpdated": "2026-10-03",
     "sources": [
       { "name": "GitHub Copilot Models & Pricing", "url": "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing" },
       { "name": "Anthropic Claude Models Overview", "url": "https://platform.claude.com/docs/en/about-claude/models/overview" },
       { "name": "Anthropic Claude Pricing", "url": "https://platform.claude.com/docs/en/about-claude/pricing" }
-    ]
+    ],
+    "contextWindowNotes": "contextWindowTokens is the model's maximum input context window. Anthropic values come from the Claude models overview. OpenAI and xAI values come from the long-context tier thresholds in GitHub Copilot's models & pricing table; a base/long-context SKU pair is one model billed two ways, so both carry the same window. Models with no published window omit the field and fall back to DEFAULT_CONTEXT_WINDOW_TOKENS in src/core/contextWindow.ts."
   },
   "pricing": {
     "gpt-4.1": {
@@ -15,7 +16,8 @@
       "inputCostPerMillion": 2.00,
       "outputCostPerMillion": 8.00,
       "cachedInputCostPerMillion": 0.50,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 1048576
     },
     "gpt-4o": {
       "displayName": "GPT-4o",
@@ -24,7 +26,8 @@
       "inputCostPerMillion": 2.50,
       "outputCostPerMillion": 10.00,
       "cachedInputCostPerMillion": 1.25,
-      "category": "Legacy"
+      "category": "Legacy",
+      "contextWindowTokens": 128000
     },
     "gpt-4o-mini": {
       "displayName": "GPT-4o mini",
@@ -33,7 +36,8 @@
       "inputCostPerMillion": 0.15,
       "outputCostPerMillion": 0.60,
       "cachedInputCostPerMillion": 0.075,
-      "category": "Legacy"
+      "category": "Legacy",
+      "contextWindowTokens": 128000
     },
     "gpt-5-mini": {
       "displayName": "GPT-5 mini",
@@ -42,7 +46,8 @@
       "inputCostPerMillion": 0.25,
       "outputCostPerMillion": 2.00,
       "cachedInputCostPerMillion": 0.025,
-      "category": "Lightweight"
+      "category": "Lightweight",
+      "contextWindowTokens": 272000
     },
     "gpt-5.2": {
       "displayName": "GPT-5.2",
@@ -51,7 +56,8 @@
       "inputCostPerMillion": 1.75,
       "outputCostPerMillion": 14.00,
       "cachedInputCostPerMillion": 0.175,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 272000
     },
     "gpt-5.2-codex": {
       "displayName": "GPT-5.2 Codex",
@@ -60,7 +66,8 @@
       "inputCostPerMillion": 1.75,
       "outputCostPerMillion": 14.00,
       "cachedInputCostPerMillion": 0.175,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 272000
     },
     "gpt-5.3-codex": {
       "displayName": "GPT-5.3 Codex",
@@ -69,7 +76,8 @@
       "inputCostPerMillion": 1.75,
       "outputCostPerMillion": 14.00,
       "cachedInputCostPerMillion": 0.175,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 272000
     },
     "gpt-5.4": {
       "displayName": "GPT-5.4",
@@ -78,7 +86,8 @@
       "inputCostPerMillion": 2.50,
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.25,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 272000
     },
     "gpt-5.4-mini": {
       "displayName": "GPT-5.4 mini",
@@ -87,7 +96,8 @@
       "inputCostPerMillion": 0.75,
       "outputCostPerMillion": 4.50,
       "cachedInputCostPerMillion": 0.075,
-      "category": "Lightweight"
+      "category": "Lightweight",
+      "contextWindowTokens": 272000
     },
     "gpt-5.4-nano": {
       "displayName": "GPT-5.4 nano",
@@ -96,7 +106,8 @@
       "inputCostPerMillion": 0.20,
       "outputCostPerMillion": 1.25,
       "cachedInputCostPerMillion": 0.02,
-      "category": "Lightweight"
+      "category": "Lightweight",
+      "contextWindowTokens": 272000
     },
     "gpt-5.4-long-context": {
       "displayName": "GPT-5.4 (Long context)",
@@ -105,7 +116,8 @@
       "inputCostPerMillion": 5.00,
       "outputCostPerMillion": 22.50,
       "cachedInputCostPerMillion": 0.50,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 272000
     },
     "gpt-5.5": {
       "displayName": "GPT-5.5",
@@ -114,7 +126,8 @@
       "inputCostPerMillion": 5.00,
       "outputCostPerMillion": 30.00,
       "cachedInputCostPerMillion": 0.50,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 272000
     },
     "gpt-5.5-long-context": {
       "displayName": "GPT-5.5 (Long context)",
@@ -123,7 +136,148 @@
       "inputCostPerMillion": 10.00,
       "outputCostPerMillion": 45.00,
       "cachedInputCostPerMillion": 1.00,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-5.6-luna": {
+      "displayName": "GPT-5.6 Luna",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.20,
+      "outputCostPerMillion": 1.20,
+      "cachedInputCostPerMillion": 0.02,
+      "category": "Lightweight",
+      "contextWindowTokens": 200000
+    },
+    "gpt-5.6-luna-long-context": {
+      "displayName": "GPT-5.6 Luna (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.40,
+      "outputCostPerMillion": 1.80,
+      "cachedInputCostPerMillion": 0.04,
+      "category": "Lightweight",
+      "contextWindowTokens": 200000
+    },
+    "gpt-5.6-sol": {
+      "displayName": "GPT-5.6 Sol",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 20.00,
+      "cachedInputCostPerMillion": 0.40,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-5.6-sol-long-context": {
+      "displayName": "GPT-5.6 Sol (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 8.00,
+      "outputCostPerMillion": 30.00,
+      "cachedInputCostPerMillion": 0.80,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-5.6-terra": {
+      "displayName": "GPT-5.6 Terra",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 12.00,
+      "cachedInputCostPerMillion": 0.20,
+      "category": "Versatile",
+      "contextWindowTokens": 272000
+    },
+    "gpt-5.6-terra-long-context": {
+      "displayName": "GPT-5.6 Terra (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 18.00,
+      "cachedInputCostPerMillion": 0.40,
+      "category": "Versatile",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6-luna": {
+      "displayName": "GPT-6 Luna",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.10,
+      "outputCostPerMillion": 0.50,
+      "cachedInputCostPerMillion": 0.01,
+      "category": "Lightweight",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6-luna-long-context": {
+      "displayName": "GPT-6 Luna (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.20,
+      "outputCostPerMillion": 0.75,
+      "cachedInputCostPerMillion": 0.02,
+      "category": "Lightweight",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6-sol": {
+      "displayName": "GPT-6 Sol",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 10.00,
+      "cachedInputCostPerMillion": 0.20,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6-sol-long-context": {
+      "displayName": "GPT-6 Sol (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 15.00,
+      "cachedInputCostPerMillion": 0.40,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6.1-sol": {
+      "displayName": "GPT-6.1 Sol",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 10.00,
+      "cachedInputCostPerMillion": 0.10,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6.1-sol-long-context": {
+      "displayName": "GPT-6.1 Sol (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 15.00,
+      "cachedInputCostPerMillion": 0.20,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6-astra": {
+      "displayName": "GPT-6 Astra",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 1.00,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
+    },
+    "gpt-6-astra-long-context": {
+      "displayName": "GPT-6 Astra (Long context)",
+      "provider": "openai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 20.00,
+      "outputCostPerMillion": 75.00,
+      "cachedInputCostPerMillion": 2.00,
+      "category": "Powerful",
+      "contextWindowTokens": 272000
     },
     "claude-haiku-4.5": {
       "displayName": "Claude Haiku 4.5",
@@ -133,7 +287,8 @@
       "outputCostPerMillion": 5.00,
       "cachedInputCostPerMillion": 0.10,
       "cacheCreationCostPerMillion": 1.25,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 200000
     },
     "claude-3.5-haiku": {
       "displayName": "Claude 3.5 Haiku",
@@ -143,7 +298,8 @@
       "outputCostPerMillion": 4.00,
       "cachedInputCostPerMillion": 0.08,
       "cacheCreationCostPerMillion": 1.00,
-      "category": "Legacy"
+      "category": "Legacy",
+      "contextWindowTokens": 200000
     },
     "claude-haiku-3.5": {
       "displayName": "Claude Haiku 3.5",
@@ -153,7 +309,8 @@
       "outputCostPerMillion": 4.00,
       "cachedInputCostPerMillion": 0.08,
       "cacheCreationCostPerMillion": 1.00,
-      "category": "Legacy"
+      "category": "Legacy",
+      "contextWindowTokens": 200000
     },
     "claude-sonnet-4": {
       "displayName": "Claude Sonnet 4",
@@ -163,7 +320,8 @@
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
       "cacheCreationCostPerMillion": 3.75,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 200000
     },
     "claude-3.5-sonnet": {
       "displayName": "Claude 3.5 Sonnet",
@@ -173,17 +331,19 @@
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
       "cacheCreationCostPerMillion": 3.75,
-      "category": "Legacy"
+      "category": "Legacy",
+      "contextWindowTokens": 200000
     },
     "claude-sonnet-4.5": {
       "displayName": "Claude Sonnet 4.5",
       "provider": "anthropic",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 3.00,
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
       "cacheCreationCostPerMillion": 3.75,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 200000
     },
     "claude-sonnet-4.6": {
       "displayName": "Claude Sonnet 4.6",
@@ -193,7 +353,19 @@
       "outputCostPerMillion": 15.00,
       "cachedInputCostPerMillion": 0.30,
       "cacheCreationCostPerMillion": 3.75,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 1000000
+    },
+    "claude-sonnet-5.5": {
+      "displayName": "Claude Sonnet 5.5",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 10.00,
+      "cachedInputCostPerMillion": 0.20,
+      "cacheCreationCostPerMillion": 2.50,
+      "category": "Versatile",
+      "contextWindowTokens": 1000000
     },
     "claude-sonnet-5": {
       "displayName": "Claude Sonnet 5",
@@ -203,37 +375,41 @@
       "outputCostPerMillion": 10.00,
       "cachedInputCostPerMillion": 0.20,
       "cacheCreationCostPerMillion": 2.50,
-      "category": "Versatile"
+      "category": "Versatile",
+      "contextWindowTokens": 1000000
     },
     "claude-opus-4.5": {
       "displayName": "Claude Opus 4.5",
       "provider": "anthropic",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 5.00,
       "outputCostPerMillion": 25.00,
       "cachedInputCostPerMillion": 0.50,
       "cacheCreationCostPerMillion": 6.25,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 200000
     },
     "claude-opus-4.6": {
       "displayName": "Claude Opus 4.6",
       "provider": "anthropic",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 5.00,
       "outputCostPerMillion": 25.00,
       "cachedInputCostPerMillion": 0.50,
       "cacheCreationCostPerMillion": 6.25,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
     },
     "claude-opus-4.7": {
       "displayName": "Claude Opus 4.7",
       "provider": "anthropic",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 5.00,
       "outputCostPerMillion": 25.00,
       "cachedInputCostPerMillion": 0.50,
       "cacheCreationCostPerMillion": 6.25,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
     },
     "claude-opus-4.8": {
       "displayName": "Claude Opus 4.8",
@@ -243,7 +419,63 @@
       "outputCostPerMillion": 25.00,
       "cachedInputCostPerMillion": 0.50,
       "cacheCreationCostPerMillion": 6.25,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-opus-5.5": {
+      "displayName": "Claude Opus 5.5",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 20.00,
+      "cachedInputCostPerMillion": 0.20,
+      "cacheCreationCostPerMillion": 5.00,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-opus-5": {
+      "displayName": "Claude Opus 5",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 5.00,
+      "outputCostPerMillion": 25.00,
+      "cachedInputCostPerMillion": 0.50,
+      "cacheCreationCostPerMillion": 6.25,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-mythos-5.1": {
+      "displayName": "Claude Mythos 5.1",
+      "provider": "anthropic",
+      "copilotOfficial": false,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 0.25,
+      "cacheCreationCostPerMillion": 12.50,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-mythos-5": {
+      "displayName": "Claude Mythos 5",
+      "provider": "anthropic",
+      "copilotOfficial": false,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 1.00,
+      "cacheCreationCostPerMillion": 12.50,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-fable-5.1": {
+      "displayName": "Claude Fable 5.1",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 0.25,
+      "cacheCreationCostPerMillion": 12.50,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
     },
     "claude-fable-5": {
       "displayName": "Claude Fable 5",
@@ -253,52 +485,181 @@
       "outputCostPerMillion": 50.00,
       "cachedInputCostPerMillion": 1.00,
       "cacheCreationCostPerMillion": 12.50,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-opus-5.5-fast": {
+      "displayName": "Claude Opus 5.5 (Fast mode)",
+      "provider": "anthropic",
+      "copilotOfficial": false,
+      "inputCostPerMillion": 8.00,
+      "outputCostPerMillion": 40.00,
+      "cachedInputCostPerMillion": 0.40,
+      "cacheCreationCostPerMillion": 10.00,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-opus-5-fast": {
+      "displayName": "Claude Opus 5 (Fast mode)",
+      "provider": "anthropic",
+      "copilotOfficial": false,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 1.00,
+      "cacheCreationCostPerMillion": 12.50,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
+    },
+    "claude-opus-4.8-fast": {
+      "displayName": "Claude Opus 4.8 (Fast mode)",
+      "provider": "anthropic",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 10.00,
+      "outputCostPerMillion": 50.00,
+      "cachedInputCostPerMillion": 1.00,
+      "cacheCreationCostPerMillion": 12.50,
+      "category": "Powerful",
+      "contextWindowTokens": 1000000
     },
     "gemini-2.5-pro": {
       "displayName": "Gemini 2.5 Pro",
       "provider": "google",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 1.25,
       "outputCostPerMillion": 10.00,
       "cachedInputCostPerMillion": 0.125,
-      "category": "Versatile"
+      "category": "Legacy",
+      "contextWindowTokens": 1048576
     },
     "gemini-3-flash": {
       "displayName": "Gemini 3 Flash",
       "provider": "google",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 0.50,
       "outputCostPerMillion": 3.00,
       "cachedInputCostPerMillion": 0.05,
-      "category": "Lightweight"
+      "category": "Legacy",
+      "contextWindowTokens": 1048576
     },
     "gemini-3.1-pro": {
       "displayName": "Gemini 3.1 Pro",
       "provider": "google",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 2.00,
       "outputCostPerMillion": 12.00,
       "cachedInputCostPerMillion": 0.20,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 1048576
     },
     "gemini-3.1-pro-long-context": {
       "displayName": "Gemini 3.1 Pro (Long context)",
       "provider": "google",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 4.00,
       "outputCostPerMillion": 18.00,
       "cachedInputCostPerMillion": 0.40,
-      "category": "Powerful"
+      "category": "Powerful",
+      "contextWindowTokens": 1048576
     },
     "gemini-3.5-flash": {
       "displayName": "Gemini 3.5 Flash",
       "provider": "google",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 1.50,
       "outputCostPerMillion": 9.00,
       "cachedInputCostPerMillion": 0.15,
-      "category": "Lightweight"
+      "category": "Lightweight",
+      "contextWindowTokens": 1048576
+    },
+    "gemini-3.6-flash": {
+      "displayName": "Gemini 3.6 Flash",
+      "provider": "google",
+      "copilotOfficial": false,
+      "inputCostPerMillion": 0.75,
+      "outputCostPerMillion": 3.75,
+      "cachedInputCostPerMillion": 0.075,
+      "category": "Versatile",
+      "contextWindowTokens": 1048576
+    },
+    "gemini-3.7-flash": {
+      "displayName": "Gemini 3.7 Flash",
+      "provider": "google",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.75,
+      "outputCostPerMillion": 3.75,
+      "cachedInputCostPerMillion": 0.075,
+      "category": "Versatile",
+      "contextWindowTokens": 1048576
+    },
+    "gemini-3.8-flash": {
+      "displayName": "Gemini 3.8 Flash",
+      "provider": "google",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.75,
+      "outputCostPerMillion": 3.75,
+      "cachedInputCostPerMillion": 0.075,
+      "category": "Versatile",
+      "contextWindowTokens": 1048576
+    },
+    "grok-4.5": {
+      "displayName": "Grok 4.5",
+      "provider": "xai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 6.00,
+      "cachedInputCostPerMillion": 0.50,
+      "category": "Versatile",
+      "contextWindowTokens": 200000
+    },
+    "grok-4.5-long-context": {
+      "displayName": "Grok 4.5 (Long context)",
+      "provider": "xai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 12.00,
+      "cachedInputCostPerMillion": 1.00,
+      "category": "Versatile",
+      "contextWindowTokens": 200000
+    },
+    "grok-4.6": {
+      "displayName": "Grok 4.6",
+      "provider": "xai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 6.00,
+      "cachedInputCostPerMillion": 0.50,
+      "category": "Versatile",
+      "contextWindowTokens": 200000
+    },
+    "grok-4.6-long-context": {
+      "displayName": "Grok 4.6 (Long context)",
+      "provider": "xai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 12.00,
+      "cachedInputCostPerMillion": 1.00,
+      "category": "Versatile",
+      "contextWindowTokens": 200000
+    },
+    "grok-4.7": {
+      "displayName": "Grok 4.7",
+      "provider": "xai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 2.00,
+      "outputCostPerMillion": 6.00,
+      "cachedInputCostPerMillion": 0.50,
+      "category": "Versatile",
+      "contextWindowTokens": 200000
+    },
+    "grok-4.7-long-context": {
+      "displayName": "Grok 4.7 (Long context)",
+      "provider": "xai",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 4.00,
+      "outputCostPerMillion": 12.00,
+      "cachedInputCostPerMillion": 1.00,
+      "category": "Versatile",
+      "contextWindowTokens": 200000
     },
     "grok-code-fast-1": {
       "displayName": "Grok Code Fast 1",
@@ -307,12 +668,13 @@
       "inputCostPerMillion": 0.20,
       "outputCostPerMillion": 1.50,
       "cachedInputCostPerMillion": 0.02,
-      "category": "Lightweight"
+      "category": "Lightweight",
+      "contextWindowTokens": 131072
     },
     "raptor-mini": {
       "displayName": "Raptor mini",
       "provider": "github",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 0.25,
       "outputCostPerMillion": 2.00,
       "cachedInputCostPerMillion": 0.025,
@@ -321,11 +683,29 @@
     "mai-code-1-flash": {
       "displayName": "MAI-Code-1-Flash",
       "provider": "microsoft",
-      "copilotOfficial": true,
+      "copilotOfficial": false,
       "inputCostPerMillion": 0.75,
       "outputCostPerMillion": 4.50,
       "cachedInputCostPerMillion": 0.075,
       "category": "Lightweight"
+    },
+    "mai-code-1.1-flash": {
+      "displayName": "MAI-Code-1.1-Flash",
+      "provider": "microsoft",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 0.20,
+      "outputCostPerMillion": 1.20,
+      "cachedInputCostPerMillion": 0.02,
+      "category": "Lightweight"
+    },
+    "kimi-k3": {
+      "displayName": "Kimi K3",
+      "provider": "moonshot",
+      "copilotOfficial": true,
+      "inputCostPerMillion": 3.00,
+      "outputCostPerMillion": 15.00,
+      "cachedInputCostPerMillion": 0.30,
+      "category": "Powerful"
     },
     "goldeneye": {
       "displayName": "Goldeneye",

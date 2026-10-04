@@ -2,13 +2,16 @@
  * Visual Studio Copilot Chat session log adapter.
  *
  * Visual Studio stores Copilot Chat sessions as MessagePack-encoded binary files
- * inside each project's .vs folder:
+ * inside each project's .vs folder, or in Visual Studio's AppData store when
+ * a chat is started without an open solution:
  *   <project>\.vs\<solution>.<ext>\copilot-chat\<hash>\sessions\<uuid>
+ *   %LOCALAPPDATA%\Microsoft\VisualStudio\<version>\VSGitHubCopilot\copilot-chat\<hash>\sessions\<uuid>
  *
- * Discovery (two strategies, results merged):
+ * Discovery (three strategies, results merged):
  *   1. Log files  — %LOCALAPPDATA%\Temp\VSGitHubCopilotLogs\*.chat.log
  *      Each log line matching /Updating session file '([^']+)'/ gives a path.
- *   2. Filesystem — scan home dir + common dev roots (repos/, code/, src/, etc.)
+ *   2. AppData    — scan Visual Studio's VSGitHubCopilot store.
+ *   3. Filesystem — scan home dir + common dev roots (repos/, code/, src/, etc.)
  *      for .vs directories, then look for copilot-chat/{hash}/sessions/{uuid} inside.
  *
  * WSL2 support: the extension runs in Linux (WSL2) but Visual Studio is a Windows-
@@ -22,8 +25,8 @@
  *
  * Token counts are ESTIMATED (~0.25 tokens/char) — VS does not store API token counts.
  *
- * Source reference:
- *   .others/ai-engineering-fluency/vscode-extension/src/visualstudio.ts
+ * Format was reverse-engineered from real Visual Studio Copilot session files;
+ * see wiki/providers/visualStudio.md for the fields this parser relies on.
  */
 
 import * as fs from 'fs';
@@ -49,6 +52,17 @@ export class VisualStudioProvider extends BaseProvider {
 
   private readonly extraRoots: string[];
 
+  /**
+   * The deep .vs scan walks the whole home tree (depth 7) with synchronous
+   * readdirs. Under WSL that tree is the 9p /mnt/c mount, where it costs ~1.5s
+   * and on most machines finds nothing because Visual Studio is not installed.
+   * So it runs only when there is evidence of VS, and at most once per
+   * DEEP_SCAN_INTERVAL_MS rather than on every 5-minute refresh.
+   */
+  private static readonly DEEP_SCAN_INTERVAL_MS = 30 * 60 * 1000;
+  private deepScanAt = 0;
+  private deepScanResults: string[] = [];
+
   constructor(additionalPaths: string[] = []) {
     super();
     this.extraRoots = additionalPaths.map(p => this.expandHome(p));
@@ -64,10 +78,37 @@ export class VisualStudioProvider extends BaseProvider {
     const seen = new Set<string>();
     const files: string[] = [];
 
+    // Cheap: a handful of readdirs on known log directories.
     this.discoverFromLogs(seen, files);
-    this.discoverFromFilesystem(seen, files);
+    this.discoverFromAppData(seen, files);
+
+    if (this.shouldDeepScan()) {
+      const found: string[] = [];
+      this.discoverFromFilesystem(seen, found);
+      this.deepScanResults = found;
+      this.deepScanAt = Date.now();
+    }
+
+    for (const p of this.deepScanResults) {
+      if (seen.has(p)) { continue; }
+      seen.add(p);
+      files.push(p);
+    }
 
     return files;
+  }
+
+  /**
+   * Run the deep scan only when Visual Studio looks present (its Copilot Chat
+   * log directory exists) or the user pointed us at explicit roots - and then
+   * only once per interval, reusing the previous result in between.
+   */
+  private shouldDeepScan(): boolean {
+    if (Date.now() - this.deepScanAt < VisualStudioProvider.DEEP_SCAN_INTERVAL_MS) { return false; }
+    if (this.extraRoots.length > 0) { return true; }
+    return this.logDirs().some(d => {
+      try { return fs.existsSync(d); } catch { return false; }
+    });
   }
 
   /** Parse VS temp chat log files to find "Updating session file '...'" entries. */
@@ -125,25 +166,43 @@ export class VisualStudioProvider extends BaseProvider {
       for (const sol of fs.readdirSync(vsDir, { withFileTypes: true })) {
         if (!sol.isDirectory()) { continue; }
         const copilotDir = path.join(vsDir, sol.name, 'copilot-chat');
-        let hashes: fs.Dirent[];
-        try { hashes = fs.readdirSync(copilotDir, { withFileTypes: true }); } catch { continue; }
-
-        for (const hash of hashes) {
-          if (!hash.isDirectory()) { continue; }
-          const sessionsDir = path.join(copilotDir, hash.name, 'sessions');
-          let sessionFiles: fs.Dirent[];
-          try { sessionFiles = fs.readdirSync(sessionsDir, { withFileTypes: true }); } catch { continue; }
-
-          for (const sf of sessionFiles) {
-            if (!sf.isFile()) { continue; }
-            const full = path.join(sessionsDir, sf.name);
-            if (seen.has(full)) { continue; }
-            seen.add(full);
-            out.push(full);
-          }
-        }
+        this.collectFromHashDirs(copilotDir, seen, out);
       }
     } catch { /* skip */ }
+  }
+
+  private collectFromHashDirs(copilotDir: string, seen: Set<string>, out: string[]): void {
+    let hashes: fs.Dirent[];
+    try { hashes = fs.readdirSync(copilotDir, { withFileTypes: true }); } catch { return; }
+
+    for (const hash of hashes) {
+      if (!hash.isDirectory()) { continue; }
+      const sessionsDir = path.join(copilotDir, hash.name, 'sessions');
+      let sessionFiles: fs.Dirent[];
+      try { sessionFiles = fs.readdirSync(sessionsDir, { withFileTypes: true }); } catch { continue; }
+
+      for (const sf of sessionFiles) {
+        if (!sf.isFile()) { continue; }
+        const full = path.join(sessionsDir, sf.name);
+        if (seen.has(full)) { continue; }
+        seen.add(full);
+        out.push(full);
+      }
+    }
+  }
+
+  /** Scan VS's AppData store for chats started without an open solution. */
+  private discoverFromAppData(seen: Set<string>, out: string[]): void {
+    for (const local of this.localAppDataRoots()) {
+      const vsRoot = path.join(local, 'Microsoft', 'VisualStudio');
+      let versions: fs.Dirent[];
+      try { versions = fs.readdirSync(vsRoot, { withFileTypes: true }); } catch { continue; }
+
+      for (const version of versions) {
+        if (!version.isDirectory()) { continue; }
+        this.collectFromHashDirs(path.join(vsRoot, version.name, 'VSGitHubCopilot', 'copilot-chat'), seen, out);
+      }
+    }
   }
 
   // ── Parsing ─────────────────────────────────────────────────────────────────
@@ -316,6 +375,20 @@ export class VisualStudioProvider extends BaseProvider {
     const wslDirs = this.wslWindowsUserDirs();
     for (const winHome of wslDirs) {
       dirs.push(path.join(winHome, 'AppData', 'Local', 'Temp', 'VSGitHubCopilotLogs'));
+    }
+
+    return dirs;
+  }
+
+  private localAppDataRoots(): string[] {
+    const dirs: string[] = [];
+
+    if (os.platform() === 'win32') {
+      dirs.push(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'));
+    }
+
+    for (const winHome of this.wslWindowsUserDirs()) {
+      dirs.push(path.join(winHome, 'AppData', 'Local'));
     }
 
     return dirs;

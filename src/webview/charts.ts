@@ -4,27 +4,33 @@
 import * as vscode from 'vscode';
 import { AggregatedMetrics } from '../types';
 import { designTokensCss } from './designSystem';
+import { webviewAssets, WebviewAssets } from './navShared';
 
 export class ChartsProvider {
   private static currentPanel: vscode.WebviewPanel | undefined;
 
   static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, refreshing = false): vscode.WebviewPanel {
     if (ChartsProvider.currentPanel) {
-      ChartsProvider.currentPanel.webview.html = ChartsProvider.getHtml(metrics, refreshing);
+      ChartsProvider.currentPanel.webview.html = ChartsProvider.getHtml(
+        metrics, refreshing, webviewAssets(ChartsProvider.currentPanel.webview, context.extensionUri));
       ChartsProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return ChartsProvider.currentPanel;
     }
     const panel = vscode.window.createWebviewPanel(
       'aiInsights.charts', 'AI Insights Charts', vscode.ViewColumn.One,
-      { enableScripts: true, retainContextWhenHidden: true },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'assets')],
+      },
     );
-    panel.webview.html = ChartsProvider.getHtml(metrics, refreshing);
+    panel.webview.html = ChartsProvider.getHtml(metrics, refreshing, webviewAssets(panel.webview, context.extensionUri));
     panel.onDidDispose(() => { ChartsProvider.currentPanel = undefined; }, null, context.subscriptions);
     ChartsProvider.currentPanel = panel;
     return panel;
   }
 
-  static getHtml(m: AggregatedMetrics, refreshing = false): string {
+  static getHtml(m: AggregatedMetrics, refreshing = false, assets: WebviewAssets): string {
     // Filter to last 30 days for chart data
     const now = new Date();
     const cutoff = new Date(now); cutoff.setDate(cutoff.getDate() - 30);
@@ -86,6 +92,7 @@ export class ChartsProvider {
     return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+${assets.csp}
 <title>AI Insights Charts</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap');
@@ -137,12 +144,12 @@ export class ChartsProvider {
   </div>
 
   <div class="tabs">
-    <button class="tab active" onclick="showChart('total', this)">Total Tokens</button>
+    <button class="tab active" data-chart="total">Total Tokens</button>
 
-    <button class="tab" onclick="showChart('cache', this)">Cache Efficiency</button>
-    <button class="tab" onclick="showChart('model', this)">By Model</button>
-    <button class="tab" onclick="showChart('provider', this)">By Provider</button>
-    <button class="tab" onclick="showChart('repository', this)">By Repository</button>
+    <button class="tab" data-chart="cache">Cache Efficiency</button>
+    <button class="tab" data-chart="model">By Model</button>
+    <button class="tab" data-chart="provider">By Provider</button>
+    <button class="tab" data-chart="repository">By Repository</button>
   </div>
 
   <div class="chart-container" id="chart-total">
@@ -163,8 +170,8 @@ export class ChartsProvider {
     <div class="chart-wrap"><canvas id="repositoryChart"></canvas></div>
   </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script>
+<script nonce="${assets.nonce}" src="${assets.chartJsUri}"></script>
+<script nonce="${assets.nonce}">
   Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
   Chart.defaults.color = "#c1c6d7";
 
@@ -260,6 +267,10 @@ export class ChartsProvider {
       },
       plugins: { legend: { labels: { color: '#e5e2e1' } } }
     }
+  });
+
+  document.querySelectorAll('.tab[data-chart]').forEach(function(btn) {
+    btn.addEventListener('click', function() { showChart(btn.getAttribute('data-chart'), btn); });
   });
 
   function showChart(type, btn) {

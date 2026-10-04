@@ -17,7 +17,8 @@
  *   user.message_rendered   - full rendered prompt incl. injected file context
  *                             (data.renderedMessage, data.turnId)
  *   assistant.turn_start    - assistant starts responding (data.model optional)
- *   assistant.message       - streamed chunk (data.text, data.thinking.text)
+ *   assistant.message       - streamed chunk (data.text or data.content,
+ *                             data.thinking.text)
  *   tool.execution_start    - agent-mode tool call (data.toolName, data.toolCallId)
  *   tool.execution_complete - tool result (data.result.result[])
  *   assistant.turn_end      - turn finished
@@ -32,8 +33,8 @@
  *
  * Mode: any tool.execution_start event in a partition ⇒ agent; otherwise ask.
  *
- * Schema reference:
- *   .others/ai-engineering-fluency/docs/logFilesSchema/jetbrains-session-schema.json
+ * Schema was reverse-engineered from real JetBrains session files; see
+ * wiki/providers/jetbrainsAI.md for the field-by-field breakdown.
  */
 
 import * as fs from 'fs';
@@ -103,7 +104,6 @@ export class JetBrainsAIProvider extends BaseProvider {
     const files: string[] = [];
 
     for (const sessionRoot of this.sessionRoots) {
-      if (!fs.existsSync(sessionRoot)) { continue; }
       try {
         for (const entry of fs.readdirSync(sessionRoot, { withFileTypes: true })) {
           if (!entry.isDirectory()) { continue; }
@@ -251,10 +251,14 @@ export class JetBrainsAIProvider extends BaseProvider {
           }
           break;
 
-        case 'assistant.message':
-          if (typeof ev.data?.text === 'string') { currentOutputText += ev.data.text; }
+        case 'assistant.message': {
+          const messageText = typeof ev.data?.text === 'string'
+            ? ev.data.text
+            : typeof ev.data?.content === 'string' ? ev.data.content : '';
+          if (messageText) { currentOutputText += messageText; }
           if (typeof ev.data?.thinking?.text === 'string') { currentThinkingText += ev.data.thinking.text; }
           break;
+        }
 
         case 'tool.execution_start':
           sawToolCall = true;

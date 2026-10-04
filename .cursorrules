@@ -9,6 +9,59 @@ This repository uses the **llm-wiki** approach. As an AI assistant working in th
 3. **Update `wiki/README.md`**: if you create a new wiki file not already listed there, add it to the table.
 4. **No duplicates**: update an existing wiki file rather than creating a second one for the same component.
 5. **Auto-update `CHANGELOG.md`**: for every shipped behavior change (feature, fix, refactor with user impact, provider parsing change, or new setting), add an entry under the current or next version in `CHANGELOG.md` within the same task.
+6. **No competitor references in `wiki/` or `CHANGELOG.md`** - ever. Competitive research
+   lives **only** in `.others/wiki/` (see [.others/wiki/README.md](.others/wiki/README.md)):
+   rival names, versions, SHAs, feature comparisons, threat levels, gap analysis, and
+   "where we lead" claims all belong there.
+   - A fact we verified on our own machine (a log field exists, a setting is opt-in, a rate
+     is billed at the cache-creation price) goes in `wiki/` stated **on its own evidence**,
+     with no attribution to whoever pointed at it.
+   - `CHANGELOG.md` says what shipped and what it does for the user - never that a
+     competitor has it, nor that it closes a competitive gap.
+   - Do not link from `wiki/` into `.others/`. The dependency is one-way: `.others/wiki/`
+     may link into `wiki/`, not the reverse.
+   - When a competitive round produces shipped work, write the user-facing part in `wiki/`
+     + `CHANGELOG.md` and the competitive reasoning in `.others/wiki/sessions/`.
+
+## Performance rules (mandatory)
+
+This extension's work runs on the VS Code **extension host thread, shared with every other
+extension**. Activation was once 19 673 ms, 87 % of it synchronous filesystem I/O that never
+yielded. Full rationale and measurement recipes: [wiki/performance.md](wiki/performance.md).
+
+Before changing anything in `src/extension.ts`, `src/providers/*`, `src/core/cacheManager.ts` or
+`src/core/sessionSnapshotStore.ts`:
+
+1. **Nothing scans from `activate()`.** It registers commands and wires state. The first `refresh()`
+   is scheduled with `setTimeout(..., 0)`. Budget for `activate()` returning: **< 100 ms**.
+2. **`await` on a sync-bodied `async` function does not yield.** Provider methods are `async` with
+   fully synchronous bodies, so awaiting them only drains microtasks - the host stays blocked. Any
+   loop over an unbounded number of files must call `yieldToHost()` (a real `setImmediate`) every
+   ~20 items. Never block the host for more than ~50 ms at a stretch.
+3. **Anything that yields needs a re-entrancy guard**, or the 5-minute timer will start a second
+   concurrent pass.
+4. **No per-file work that is O(files x roots).** Build an index once per scan and look it up per
+   file. Check that repeated work is *the same* work before caching it - the 1 950 `existsSync`
+   calls this replaced were all for distinct paths, so a cache would not have helped.
+5. **List a directory, do not probe fixed paths inside it.** One `readdir` of the parent answers
+   what 13 blind `existsSync` probes did.
+6. **Do not delete an `existsSync` that guards a `readdirSync` without measuring.** It is usually a
+   regression: for a missing directory the guard is one cheap `stat`, the bare `readdirSync` is a
+   failed syscall plus a thrown exception.
+7. **Stat each file once** and pass `fs.Stats` / `mtimeMs` through (`parseSessionFile(file, stats)`,
+   `cacheManager.needsUpdate(file, mtimeMs)`). New code on this path takes the stat as a parameter.
+8. **Never read-modify-write a whole JSON store per item.** Mutate in memory, set a dirty flag,
+   `flush()` once at the end of the pass.
+9. **Cache negative results too** - a file that parses to `null` must not be re-read every refresh.
+10. **Treat `/mnt/c` (WSL) as ~100x slower than native.** Any scan that can reach it must be gated
+    on evidence the target software exists, and throttled.
+
+**Every performance claim needs a before/after measurement**, run **alternately** in one session -
+the OS page cache makes a single before-then-after comparison worthless (the same code measured
+15.9 s cold and 5.1 s warm). Use `process.hrtime.bigint()`, not `Date.now()`. A change to discovery
+or parsing must also ship a diff proving output is **identical**: file lists, and per session
+`id | totalTokens | workspace | interactions.length`. Measure an optimization's ceiling before
+doing it; if it lands inside the noise, say so and skip it.
 
 ## Wiki folder structure
 

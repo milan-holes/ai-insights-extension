@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Session } from '../types';
 import { computeContextRotScore } from '../core/contextRot';
-import { navCss, navTopbarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navJs, NAV_COMMANDS, webviewAssets, WebviewAssets } from './navShared';
 import { designTokensCss } from './designSystem';
 
 interface CompareSessionData {
@@ -140,7 +140,8 @@ export class SessionCompareProvider {
 
     if (SessionCompareProvider.currentPanel) {
       const logoUri = SessionCompareProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      SessionCompareProvider.currentPanel.webview.html = SessionCompareProvider.buildHtml(data, logoUri);
+      SessionCompareProvider.currentPanel.webview.html = SessionCompareProvider.buildHtml(
+        data, logoUri, webviewAssets(SessionCompareProvider.currentPanel.webview, context.extensionUri));
       SessionCompareProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return SessionCompareProvider.currentPanel;
     }
@@ -153,7 +154,7 @@ export class SessionCompareProvider {
     );
 
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = SessionCompareProvider.buildHtml(data, logoUri);
+    panel.webview.html = SessionCompareProvider.buildHtml(data, logoUri, webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -172,13 +173,14 @@ export class SessionCompareProvider {
     return panel;
   }
 
-  private static buildHtml(sessions: CompareSessionData[], logoUri: string): string {
+  private static buildHtml(sessions: CompareSessionData[], logoUri: string, assets: WebviewAssets): string {
     const safe = JSON.stringify(sessions).replace(/<\/script>/gi, '<\\/script>');
     const n = sessions.length;
     const parts: string[] = [];
 
     parts.push('<!DOCTYPE html><html lang="en"><head>');
     parts.push('<meta charset="UTF-8">');
+    parts.push(assets.csp);
     parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     parts.push('<title>Session Comparison</title>');
     parts.push('<style>');
@@ -319,13 +321,13 @@ export class SessionCompareProvider {
     parts.push('</div><!-- /cmp-content -->');
 
     // Data + script
-    parts.push('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>');
-    parts.push(`<script>var __DATA__=${safe};</script>`);
+    parts.push('<script nonce="' + assets.nonce + '" src="' + assets.chartJsUri + '"></script>');
+    parts.push(`<script nonce="${assets.nonce}">var __DATA__=${safe};</script>`);
 
     const colors = JSON.stringify(SESSION_COLORS);
     const colorsFaint = JSON.stringify(SESSION_COLORS_FAINT);
 
-    parts.push('<script>');
+    parts.push('<script nonce="' + assets.nonce + '">');
     parts.push(`(function(){
 var vscode=acquireVsCodeApi();
 window.vscode=vscode;
@@ -335,7 +337,10 @@ var FAINT=${colorsFaint};
 Chart.defaults.font.family='Inter, system-ui, sans-serif';
 Chart.defaults.color='#c1c6d7';
 
-function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
+// Escapes for both text and quoted-attribute contexts. The previous DOM round-trip
+// (textContent -> innerHTML) left quotes intact, which broke out of title="..." for
+// any session title or shell command containing a double quote.
+function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function fmt(n){if(n==null)return'-';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(Math.round(n));}
 function fmtCost(n){if(n==null||n===0)return'$0.00';if(n<0.01)return'$'+n.toFixed(5);return'$'+n.toFixed(4);}
 function fmtPct(n){return(n*100).toFixed(1)+'%';}

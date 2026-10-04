@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import { LiveBudgetConfig, LiveSessionState, Session } from '../types';
 import { PROVIDER_ICONS } from './providerIcons';
 import { computeContextRotScore, computeContextRotAnalysis, ContextRotScore } from '../core/contextRot';
-import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS, webviewAssets, WebviewAssets } from './navShared';
 import { designTokensCss } from './designSystem';
+import { isLocalModel } from '../core/modelNames';
 
 type SessionRow = {
   id: string;
@@ -64,7 +65,9 @@ export class SessionsViewProvider {
 
     if (SessionsViewProvider.currentPanel) {
       const logoUri = SessionsViewProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      SessionsViewProvider.currentPanel.webview.html = SessionsViewProvider.buildHtml(rows, liveSessions, budgetConfig, refreshing, logoUri);
+      SessionsViewProvider.currentPanel.webview.html = SessionsViewProvider.buildHtml(
+        rows, liveSessions, budgetConfig, refreshing, logoUri,
+        webviewAssets(SessionsViewProvider.currentPanel.webview, context.extensionUri));
       SessionsViewProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return SessionsViewProvider.currentPanel;
     }
@@ -80,7 +83,8 @@ export class SessionsViewProvider {
       }
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = SessionsViewProvider.buildHtml(rows, liveSessions, budgetConfig, refreshing, logoUri);
+    panel.webview.html = SessionsViewProvider.buildHtml(rows, liveSessions, budgetConfig, refreshing, logoUri,
+      webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -180,6 +184,7 @@ export class SessionsViewProvider {
         budgetConfig,
         refreshing,
         logoUri,
+        webviewAssets(SessionsViewProvider.currentPanel.webview, context.extensionUri),
       );
     };
     if (SessionsViewProvider._overlayOpen) {
@@ -228,6 +233,7 @@ export class SessionsViewProvider {
           totalToolCalls: (s.interactions || []).reduce((sum: number, i: any) => sum + (i.toolCalls?.length ?? 0), 0),
           interactions: (s.interactions || []).length,
           models: s.models,
+          localModels: (s.models || []).filter(isLocalModel),
           workspace: s.workspace,
           title: s.title || '',
           estimatedCostUsd: cost,
@@ -249,12 +255,14 @@ export class SessionsViewProvider {
     budgetConfig: LiveBudgetConfig | null = null,
     refreshing = false,
     logoUri = '',
+    assets: WebviewAssets,
   ): string {
     const safe = JSON.stringify(rows).replace(/<\/script>/gi, '<\\/script>');
     const parts: string[] = [];
 
     parts.push('<!DOCTYPE html><html lang="en"><head>');
     parts.push('<meta charset="UTF-8">');
+    parts.push(assets.csp);
     parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     parts.push('<title>AI Sessions</title>');
     parts.push('<style>');
@@ -310,6 +318,7 @@ export class SessionsViewProvider {
     parts.push('.title-cell{font-size:0.82em;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;color:var(--text-secondary);}');
     parts.push('.credits-cell{font-family:var(--font-data);font-size:0.82em;white-space:nowrap;}');
     parts.push('.credits-badge{display:inline-block;padding:2px 7px;background:rgba(0,200,100,0.1);border-radius:3px;color:#00c864;font-weight:600;}');
+    parts.push('.local-tag{font-family:var(--font-primary);font-size:0.9em;font-weight:600;color:var(--green);}');
     parts.push('.model-tag{display:inline-block;padding:1px 6px;background:var(--bg-surface-high);border-radius:3px;font-size:0.75em;color:var(--text-secondary);font-family:var(--font-data);margin:1px 2px 1px 0;}');
     parts.push('.breakdown-cell{min-width:220px;}');
     parts.push('.tok-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;margin-bottom:7px;background:rgba(255,255,255,0.04);}');
@@ -613,8 +622,8 @@ export class SessionsViewProvider {
     // Compare bar — shown when 2+ sessions are selected
     parts.push('<div class="compare-bar" id="compareBar">');
     parts.push('  <span class="compare-bar-info"><span class="compare-bar-count" id="compareCount">0</span> session(s) selected</span>');
-    parts.push('  <button class="btn-compare" onclick="compareSelected()">Compare Sessions</button>');
-    parts.push('  <button class="btn-clear-sel" onclick="clearSelection()">Clear</button>');
+    parts.push('  <button class="btn-compare" data-act="compare">Compare Sessions</button>');
+    parts.push('  <button class="btn-clear-sel" data-act="clearSel">Clear</button>');
     parts.push('</div>');
 
     // Overlay must be in the DOM before scripts execute so getElementById succeeds
@@ -622,18 +631,18 @@ export class SessionsViewProvider {
     parts.push('  <div class="analyze-panel">');
     parts.push('    <div class="analyze-hdr">');
     parts.push('      <span class="analyze-hdr-title" id="ovHdrTitle"></span>');
-    parts.push('      <button class="analyze-close" onclick="closeAnalyzeOverlay()" title="Close">&#215;</button>');
+    parts.push('      <button class="analyze-close" data-act="closeAnalyze" title="Close">&#215;</button>');
     parts.push('    </div>');
     parts.push('    <div class="analyze-body" id="ovBody"></div>');
     parts.push('  </div>');
     parts.push('</div>');
 
-    parts.push('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>');
-    parts.push('<script>window.__SESSIONS__=');
+    parts.push('<script nonce="' + assets.nonce + '" src="' + assets.chartJsUri + '"></script>');
+    parts.push('<script nonce="' + assets.nonce + '">window.__SESSIONS__=');
     parts.push(safe);
     parts.push(';</script>');
 
-    parts.push('<script>');
+    parts.push('<script nonce="' + assets.nonce + '">');
     parts.push('(function(){');
     parts.push('  var vscode=acquireVsCodeApi();');
     parts.push('  window.vscode=vscode;');
@@ -1172,20 +1181,20 @@ export class SessionsViewProvider {
     parts.push('    var rows=pageSessions.map(function(s,relIdx){');
     parts.push('      var idx=pageStart+relIdx;');
     parts.push('      var repo=s.workspace?(s.workspace.replace(/\\\\\\\\/g,"/").split("/").pop()||s.workspace):"-";');
-    parts.push('      var mods=(s.models||[]).map(m=>"<span class=\\"model-tag\\">"+esc(m)+"</span>").join("")||"-";');
+    parts.push('      var mods=(s.models||[]).map(m=>"<span class=\\"model-tag\\">"+esc(m)+((s.localModels||[]).indexOf(m)>=0?" <span class=\\"local-tag\\" title=\\"Runs on your machine - not billed\\">Local</span>":"")+"</span>").join("")||"-";');
     parts.push('      var titleCell=s.title?"<span class=\\"title-cell\\" title=\\""+esc(s.title)+"\\">" +esc(s.title)+"</span>":"<span style=\\"opacity:0.3\\">-</span>";');
-    parts.push('      var openBtn=s.sourceFile?"<button class=\\"btn-open\\" onclick=\\"openSession("+idx+")\\">Open</button>":"";');
-    parts.push('      var replayBtn=s.interactions>0?"<button class=\\"btn-open\\" onclick=\\"replaySession("+idx+")\\" title=\\"Replay session timeline\\">Replay</button>":"";');
-    parts.push('      var analyzeBtn="<button class=\\"btn-open\\" onclick=\\"analyzeSession("+idx+")\\" title=\\"Context Workbench\\">Analyze</button>";');
-    parts.push('      var chkHtml="<td class=\\"chk-cell\\"><input type=\\"checkbox\\" class=\\"row-check\\" data-idx=\\""+idx+"\\" "+(selectedIds.has(s.id)?"checked":"")+" onchange=\\"toggleRow("+idx+")\\" title=\\"Select for comparison\\"></td>";');
+    parts.push('      var openBtn=s.sourceFile?"<button class=\\"btn-open\\" data-open=\\""+idx+"\\">Open</button>":"";');
+    parts.push('      var replayBtn=s.interactions>0?"<button class=\\"btn-open\\" data-replay=\\""+idx+"\\" title=\\"Replay session timeline\\">Replay</button>":"";');
+    parts.push('      var analyzeBtn="<button class=\\"btn-open\\" data-analyze=\\""+idx+"\\" title=\\"Context Workbench\\">Analyze</button>";');
+    parts.push('      var chkHtml="<td class=\\"chk-cell\\"><input type=\\"checkbox\\" class=\\"row-check\\" data-idx=\\""+idx+"\\" "+(selectedIds.has(s.id)?"checked":"")+" data-toggle=\\""+idx+"\\" title=\\"Select for comparison\\"></td>";');
     parts.push('      var tagChips=(s.tags||[]).map(function(tg){return"<span class=\\"tag-chip\\">"+esc(tg)+"<button class=\\"tag-rm\\" data-rm-idx=\\""+idx+"\\" data-rm-tag=\\""+esc(tg)+"\\" title=\\"Remove tag\\">&#215;</button></span>";}).join("");');
     parts.push('      var tagCell="<td class=\\"tags-cell\\">"+tagChips+"<button class=\\"btn-tag-add\\" data-add-idx=\\""+idx+"\\" title=\\"Add tag\\">+</button><input class=\\"tag-input\\" id=\\"ti"+idx+"\\" data-idx=\\""+idx+"\\" placeholder=\\"tag…\\" style=\\"display:none\\"></td>";');
     parts.push('      return "<tr data-idx=\\""+idx+"\\">"+chkHtml+"<td class=\\"data-text\\">"+fmtDate(s.startTime)+"</td><td>"+badge(s.provider,s.providerName)+"</td><td>"+titleCell+"</td><td><span class=\\"ws-cell\\" title=\\""+esc(s.workspace||"")+"\\">"+ esc(repo)+"</span></td><td class=\\"data-text\\" style=\\"font-weight:600\\">"+fmt(s.totalTokens)+"</td>"+breakdown(s)+costCell(s)+contextHealthCell(s)+"<td class=\\"data-text\\">"+s.interactions+"</td><td>"+mods+"</td><td class=\\"data-text\\" style=\\"color:var(--text-secondary)\\">"+fmtDur(s.startTime,s.endTime)+"</td>"+tagCell+"<td style=\\"white-space:nowrap\\">"+analyzeBtn+" "+replayBtn+" "+openBtn+"</td></tr>";');
     parts.push('    }).join("");');
-    parts.push('    var pgHtml=totalPages>1?"<div class=\\"pagination\\"><button onclick=\\"goToPage("+(currentPage-1)+")\\" "+(currentPage===0?"disabled":"")+">&#8592; Prev</button><span class=\\"page-info\\">Page "+(currentPage+1)+" of "+totalPages+" &middot; "+sessions.length+" sessions</span><button onclick=\\"goToPage("+(currentPage+1)+")\\" "+(currentPage>=totalPages-1?"disabled":"")+">Next &#8594;</button></div>":"";');
+    parts.push('    var pgHtml=totalPages>1?"<div class=\\"pagination\\"><button data-page=\\""+(currentPage-1)+"\\" "+(currentPage===0?"disabled":"")+">&#8592; Prev</button><span class=\\"page-info\\">Page "+(currentPage+1)+" of "+totalPages+" &middot; "+sessions.length+" sessions</span><button data-page=\\""+(currentPage+1)+"\\" "+(currentPage>=totalPages-1?"disabled":"")+">Next &#8594;</button></div>":"";');
     parts.push('    var ctxHint="Context Health \\u24d8";');
-    parts.push('    var ctxTip="Score 0\\u201310 from 5 signals:\\n\\u2022 Turn count  (>40 turns \\u2192 +1, >80 \\u2192 +2)\\n\\u2022 Session age  (>60 min \\u2192 +1, >120 min \\u2192 +2)\\n\\u2022 Input bloat  last-third vs first-third avg input (>1.5\\u00d7 \\u2192 +1, >2\\u00d7 \\u2192 +2, >4\\u00d7 \\u2192 +3)\\n\\u2022 Output decline  last-third vs first-third avg output (<0.65\\u00d7 \\u2192 +1, <0.4\\u00d7 \\u2192 +2)\\n\\u2022 Total input size  (>80K \\u2192 +1, >200K \\u2192 +2)\\n\\nGrowth signals require \\u22656 turns to activate.\\n\\n\\u25cf 0\\u20133 Healthy  \\u25cf 4\\u20136 Warn  \\u25cf 7\\u201310 Stale";');
-    parts.push('    document.getElementById("tableContainer").innerHTML="<table><thead><tr><th class=\\"chk-cell\\" title=\\"Select for comparison\\"></th><th class=\\""+thc("startTime")+"\\" onclick=\\"sortBy(\'startTime\')\\">Date"+arrow("startTime")+"</th><th>Provider</th><th>Session</th><th>Workspace</th><th class=\\""+thc("totalTokens")+"\\" onclick=\\"sortBy(\'totalTokens\')\\">Tokens"+arrow("totalTokens")+"</th><th>Breakdown</th><th>Cost</th><th style=\\"cursor:help\\" title=\\""+ctxTip.replace(/"/g,\'&quot;\').replace(/\\n/g,\'&#10;\')+"\\">" +ctxHint+"</th><th class=\\""+thc("interactions")+"\\" onclick=\\"sortBy(\'interactions\')\\">Interactions"+arrow("interactions")+"</th><th>Models</th><th>Duration</th><th>Tags</th><th></th></tr></thead><tbody>"+rows+"</tbody></table>"+pgHtml;');
+    parts.push('    var ctxTip="Score 0\\u201310 from 5 signals:\\n\\u2022 Turn count  (>40 turns \\u2192 +1, >80 \\u2192 +2)\\n\\u2022 Session age  (>60 min \\u2192 +1, >120 min \\u2192 +2)\\n\\u2022 Input bloat  last-third vs first-third avg input (>1.5\\u00d7 \\u2192 +1, >2\\u00d7 \\u2192 +2, >4\\u00d7 \\u2192 +3)\\n\\u2022 Output decline  last-third vs first-third avg output (<0.65\\u00d7 \\u2192 +1, <0.4\\u00d7 \\u2192 +2)\\n\\u2022 Context pressure  peak context vs the model window (>40% \\u2192 +1, >80% \\u2192 +2)\\n\\nGrowth signals require \\u22656 turns to activate.\\n\\n\\u25cf 0\\u20133 Healthy  \\u25cf 4\\u20136 Warn  \\u25cf 7\\u201310 Stale";');
+    parts.push('    document.getElementById("tableContainer").innerHTML="<table><thead><tr><th class=\\"chk-cell\\" title=\\"Select for comparison\\"></th><th class=\\""+thc("startTime")+"\\" data-sort=\\"startTime\\">Date"+arrow("startTime")+"</th><th>Provider</th><th>Session</th><th>Workspace</th><th class=\\""+thc("totalTokens")+"\\" data-sort=\\"totalTokens\\">Tokens"+arrow("totalTokens")+"</th><th>Breakdown</th><th>Cost</th><th style=\\"cursor:help\\" title=\\""+ctxTip.replace(/"/g,\'&quot;\').replace(/\\n/g,\'&#10;\')+"\\">" +ctxHint+"</th><th class=\\""+thc("interactions")+"\\" data-sort=\\"interactions\\">Interactions"+arrow("interactions")+"</th><th>Models</th><th>Duration</th><th>Tags</th><th></th></tr></thead><tbody>"+rows+"</tbody></table>"+pgHtml;');
     parts.push('  }');
 
     parts.push('  function sortBy(k){sortDir=sortKey===k?-sortDir:-1;sortKey=k;currentPage=0;applyFilters();}');
@@ -1193,6 +1202,26 @@ export class SessionsViewProvider {
     parts.push('  window.sortBy=sortBy;');
     parts.push('  window.goToPage=goToPage;');
     parts.push('  applyFilters();');
+    // Delegated listeners: the row/pagination/sort controls used to carry inline
+    // onclick/onchange attributes, which the panel CSP now blocks.
+    parts.push('  document.addEventListener("click",function(ev){');
+    parts.push('    var el=ev.target.closest("[data-open],[data-replay],[data-analyze],[data-page],[data-sort],[data-act]");');
+    parts.push('    if(!el)return;');
+    parts.push('    if(el.hasAttribute("data-open"))return window.openSession(Number(el.getAttribute("data-open")));');
+    parts.push('    if(el.hasAttribute("data-replay"))return window.replaySession(Number(el.getAttribute("data-replay")));');
+    parts.push('    if(el.hasAttribute("data-analyze"))return window.analyzeSession(Number(el.getAttribute("data-analyze")));');
+    parts.push('    if(el.hasAttribute("data-page"))return window.goToPage(Number(el.getAttribute("data-page")));');
+    parts.push('    if(el.hasAttribute("data-sort"))return window.sortBy(el.getAttribute("data-sort"));');
+    parts.push('    var act=el.getAttribute("data-act");');
+    parts.push('    if(act==="compare")return window.compareSelected();');
+    parts.push('    if(act==="clearSel")return window.clearSelection();');
+    parts.push('    if(act==="closeAnalyze")return window.closeAnalyzeOverlay();');
+    parts.push('    if(act==="collapse"){var c=el.closest(".session-card");if(c)c.classList.toggle("is-collapsed");}');
+    parts.push('  });');
+    parts.push('  document.addEventListener("change",function(ev){');
+    parts.push('    var t=ev.target.closest("[data-toggle]");');
+    parts.push('    if(t)window.toggleRow(Number(t.getAttribute("data-toggle")));');
+    parts.push('  });');
     parts.push('})();');
     parts.push(navJs());
     parts.push('</script>');
@@ -1249,7 +1278,7 @@ function buildLiveSessionCard(sess: LiveSessionState, budget: LiveBudgetConfig |
   html += `<div class="session-card-title"><span class="live-dot"></span><span>${escapeHtml(sess.sessionTitle || sess.sessionId)}</span><span class="provider-chip p-${sess.provider}">${escapeHtml(sess.provider)}</span></div>`;
   html += `<div style="display:flex;align-items:center;gap:10px;margin-left:auto;">`;
   html += `<span style="font-size:0.78em;color:var(--text-secondary);font-family:var(--font-data)">started ${new Date(sess.sessionStartTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>`;
-  html += `<button class="session-card-collapse" onclick="this.closest('.session-card').classList.toggle('is-collapsed')" title="Collapse / expand">&#8897;</button>`;
+  html += `<button class="session-card-collapse" data-act="collapse" title="Collapse / expand">&#8897;</button>`;
   html += '</div>';
   html += '</div>';
 

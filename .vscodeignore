@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 out/**
+out-test/**
 node_modules/**
 src/**
 .gitignore
@@ -20,3 +21,6 @@ agent-handoff.md
 .github/**
 CLAUDE.md
 .ai-abtest
+test
+.nvmrc
+app

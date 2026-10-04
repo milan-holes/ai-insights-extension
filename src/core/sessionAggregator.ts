@@ -1,8 +1,8 @@
 /**
  * Session aggregator - merges data from all providers into unified metrics.
  */
-import { Session, DailyUsage, AggregatedMetrics, ProviderMetrics, ProviderId, AggregationConfig, ModelUsageMetrics } from '../types';
-import { calculateCost, calculateCostBreakdown } from './costEstimation';
+import { Session, DailyUsage, AggregatedMetrics, ProviderMetrics, ProviderId, AggregationConfig, ModelUsageMetrics, CostSource, PromptPrefixSummary } from '../types';
+import { billingShapeFor, calculateCost, calculateCostBreakdown, resolveInteractionCost, weakestCostSource } from './costEstimation';
 import { calculateEnvironmentalImpact } from './environmentalImpact';
 import { toLocalDateKey } from './dateUtils';
 import {
@@ -143,6 +143,7 @@ export function aggregateSessions(sessions: Session[], config: AggregationConfig
   const sessionComplexity = computeSessionComplexity(sessions, config);
   const contextEngagement = computeContextEngagement(sessions);
   const sessionHygiene = computeSessionHygieneSummary(sessions);
+  const promptPrefix = computePromptPrefixSummary(sessions);
 
   return {
     today: todayMetrics,
@@ -167,6 +168,7 @@ export function aggregateSessions(sessions: Session[], config: AggregationConfig
     sessionComplexity,
     contextEngagement,
     sessionHygiene,
+    promptPrefix,
   };
 }
 
@@ -192,6 +194,8 @@ function buildMetrics(sessions: Session[]): ProviderMetrics {
   const cacheReadTokens = sessions.reduce((s, sess) => s + sess.totalCacheReadTokens, 0);
   const cacheWriteTokens = sessions.reduce((s, sess) => s + sess.totalCacheWriteTokens, 0);
   const cacheTokensEstimated = sessions.some(sess => sess.cacheTokensEstimated);
+  const costSources: CostSource[] = [];
+  let billedCost = 0;
   const totalInteractions = sessions.reduce((s, sess) => s + sess.interactions.length, 0);
 
   let cost = 0;
@@ -224,8 +228,17 @@ function buildMetrics(sessions: Session[]): ProviderMetrics {
         }
       }
 
-      const costBreakdown = calculateCostBreakdown(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens);
-      const iCost = costBreakdown.totalCost;
+      // Prefer the provider's own billed figure; fall back to an estimate in that
+      // provider's billing shape. The breakdown is still needed for the per-model rate
+      // columns, so it is computed either way.
+      const resolved = resolveInteractionCost(sess.provider, i);
+      const costBreakdown = resolved.breakdown ?? calculateCostBreakdown(
+        i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens,
+        { shape: billingShapeFor(sess.provider) },
+      );
+      const iCost = resolved.usd;
+      costSources.push(resolved.source);
+      if (resolved.source === 'billed') { billedCost += iCost; }
       cost += iCost;
       sessCost += iCost;
       costByModel[modelKey] = (costByModel[modelKey] || 0) + iCost;
@@ -267,7 +280,10 @@ function buildMetrics(sessions: Session[]): ProviderMetrics {
 
       // Compute cache savings: what would it have cost with no caching?
       if (i.cacheReadTokens > 0) {
-        const costWithoutCache = calculateCost(i.model, i.inputTokens + i.cacheReadTokens, i.outputTokens, 0, 0);
+        const costWithoutCache = calculateCost(
+          i.model, i.inputTokens + i.cacheReadTokens, i.outputTokens, 0, 0,
+          { shape: billingShapeFor(sess.provider) },
+        );
         const costWithCache = iCost;
         cacheSavingsUsd += Math.max(0, costWithoutCache - costWithCache);
       }
@@ -285,6 +301,8 @@ function buildMetrics(sessions: Session[]): ProviderMetrics {
     averageTokensPerSession: sessions.length > 0 ? Math.round(totalTokens / sessions.length) : 0,
     averageInteractionsPerSession: sessions.length > 0 ? Math.round(totalInteractions / sessions.length) : 0,
     estimatedCost: cost,
+    costSource: weakestCostSource(costSources),
+    billedCost,
     estimatedCO2Grams: env.co2Grams,
     estimatedWaterLiters: env.waterLiters,
     treeEquivalentYears: env.treeEquivalentYears,
@@ -328,7 +346,8 @@ function buildDailyUsage(sessions: Session[]): DailyUsage[] {
       day.interactions += 1;
       day.models[i.model] = (day.models[i.model] || 0) + i.totalTokens;
       day.repositories[repoName] = (day.repositories[repoName] || 0) + i.totalTokens;
-      day.estimatedCost += calculateCost(i.model, i.inputTokens, i.outputTokens, i.cacheReadTokens, i.cacheWriteTokens);
+      // Same resolution as the period totals, so the daily series sums to them.
+      day.estimatedCost += resolveInteractionCost(sess.provider, i).usd;
       for (const t of i.toolCalls) {
         day.toolCalls[t] = (day.toolCalls[t] || 0) + 1;
       }
@@ -347,4 +366,64 @@ function buildDailyUsage(sessions: Session[]): DailyUsage[] {
   }
 
   return [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Roll the per-session prompt-prefix breakdowns into one picture of fixed overhead.
+ *
+ * The headline signal is tool schema that is shipped on every request and never called:
+ * a tool is only reported as never-used when no session that was offered it called it, so
+ * one session's narrow task cannot condemn a tool another session relies on. Sessions
+ * without readable sidecars contribute nothing rather than zeros.
+ */
+function computePromptPrefixSummary(sessions: Session[]): PromptPrefixSummary {
+  const withPrefix = sessions.filter(s => s.promptPrefix);
+  if (withPrefix.length === 0) {
+    return {
+      sessionsWithPrefix: 0,
+      meanPrefixTokens: 0,
+      meanUnusedToolTokens: 0,
+      neverUsedTools: [],
+      toolsOffered: 0,
+      toolsEverUsed: 0,
+    };
+  }
+
+  const offeredCount = new Map<string, number>();
+  const everUsed = new Set<string>();
+  let prefixTokens = 0;
+  let unusedToolTokens = 0;
+  let shareSum = 0;
+  let shareCount = 0;
+
+  for (const sess of withPrefix) {
+    const prefix = sess.promptPrefix!;
+    prefixTokens += prefix.totalTokens;
+    unusedToolTokens += prefix.unusedToolTokens;
+    if (prefix.shareOfMeanInput !== undefined) {
+      shareSum += prefix.shareOfMeanInput;
+      shareCount += 1;
+    }
+    for (const name of prefix.definedTools) {
+      offeredCount.set(name, (offeredCount.get(name) ?? 0) + 1);
+    }
+    for (const name of prefix.usedTools) {
+      everUsed.add(name);
+    }
+  }
+
+  const neverUsedTools = [...offeredCount.entries()]
+    .filter(([name]) => !everUsed.has(name))
+    .map(([name, sessionsOffered]) => ({ name, sessionsOffered }))
+    .sort((a, b) => b.sessionsOffered - a.sessionsOffered || a.name.localeCompare(b.name));
+
+  return {
+    sessionsWithPrefix: withPrefix.length,
+    meanPrefixTokens: Math.round(prefixTokens / withPrefix.length),
+    meanUnusedToolTokens: Math.round(unusedToolTokens / withPrefix.length),
+    meanShareOfInput: shareCount > 0 ? shareSum / shareCount : undefined,
+    neverUsedTools,
+    toolsOffered: offeredCount.size,
+    toolsEverUsed: everUsed.size,
+  };
 }

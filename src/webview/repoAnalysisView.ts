@@ -38,7 +38,10 @@ export class RepoAnalysisViewProvider {
     ).toString();
 
     const hasAnthropicKey = !!(await context.secrets.get(ANTHROPIC_KEY_SECRET));
-    panel.webview.html = RepoAnalysisViewProvider.buildHTML(nonce, cspSource, logoUri, hasAnthropicKey);
+    const mermaidUri = panel.webview.asWebviewUri(
+      vscode.Uri.joinPath(context.extensionUri, 'assets', 'vendor', 'mermaid.min.js'),
+    ).toString();
+    panel.webview.html = RepoAnalysisViewProvider.buildHTML(nonce, cspSource, logoUri, hasAnthropicKey, mermaidUri);
 
     panel.webview.onDidReceiveMessage(async (msg: Record<string, unknown>) => {
       const p = RepoAnalysisViewProvider.currentPanel;
@@ -159,7 +162,7 @@ export class RepoAnalysisViewProvider {
     vscode.window.showInformationMessage(`Agent handoff exported to ${outPath}`);
   }
 
-  private static buildHTML(nonce: string, cspSource: string, logoUri: string, _hasAnthropicKey: boolean): string {
+  private static buildHTML(nonce: string, cspSource: string, logoUri: string, _hasAnthropicKey: boolean, mermaidUri: string): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -167,7 +170,7 @@ export class RepoAnalysisViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'none';
-    script-src 'nonce-${nonce}' https://cdn.jsdelivr.net;
+    script-src 'nonce-${nonce}';
     style-src 'unsafe-inline';
     img-src ${cspSource} data:;
     font-src ${cspSource};
@@ -210,7 +213,7 @@ ${navPagebarHtml('repoAnalysis', 'Repo Analysis')}
   </div>
 </div>
 
-<script async nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script async nonce="${nonce}" src="${mermaidUri}"></script>
 <script nonce="${nonce}">
 (function() {
   const vscode = acquireVsCodeApi();
@@ -497,7 +500,7 @@ ${navPagebarHtml('repoAnalysis', 'Repo Analysis')}
       lines.push('');
     }
 
-    return lines.join('\n');
+    return lines.join('\\n');
   }
 
   function showError(msg) {

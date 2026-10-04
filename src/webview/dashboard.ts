@@ -10,7 +10,7 @@ import { Insight } from '../core/insightsEngine';
 import { computeCacheMetrics } from '../core/budgetManager';
 import { toLocalDateKey } from '../core/dateUtils';
 import { providerIcon } from './providerIcons';
-import { navCss, navTopbarHtml, navPagebarHtml, navFilterbarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navPagebarHtml, navFilterbarHtml, navJs, NAV_COMMANDS, escapeHtml, escJs, webviewAssets, WebviewAssets, costSourceBadge, costSourceLabel } from './navShared';
 import { designTokensCss } from './designSystem';
 
 interface RoiConfig { hourlyRate: number; tokensPerHourSaved: number; }
@@ -105,13 +105,13 @@ function buildMcpSectionHtml(toolCalls: Record<string, number>, fmtN: (n: number
   const chips = mcpTools.length === 0
     ? '<p style="color:var(--text-secondary);">No MCP tools detected this month.</p>'
     : mcpTools.map(([name, count]) =>
-        `<span style="display:inline-block;background:var(--bg-surface-high);border:1px solid var(--border);border-radius:4px;padding:3px 10px;font-size:0.8em;margin:0 4px 6px 0;font-family:var(--font-data);">${name} <span style="color:var(--text-secondary);">(${count})</span></span>`
+        `<span style="display:inline-block;background:var(--bg-surface-high);border:1px solid var(--border);border-radius:4px;padding:3px 10px;font-size:0.8em;margin:0 4px 6px 0;font-family:var(--font-data);">${escapeHtml(name)} <span style="color:var(--text-secondary);">(${count})</span></span>`
       ).join('');
   const totalMcp = [...serverMap.values()].reduce((s, n) => s + n, 0);
   const serverRows = serverMap.size === 0
     ? '<tr><td colspan="3" style="color:var(--text-secondary);padding:16px;text-align:center;">No MCP servers detected</td></tr>'
     : [...serverMap.entries()].sort(([, a], [, b]) => b - a).map(([server, count], i) =>
-        `<tr><td style="color:var(--text-secondary);width:32px;">${i + 1}</td><td><strong>${server}</strong></td><td class="data-text" style="text-align:right;">${count.toLocaleString()}</td></tr>`
+        `<tr><td style="color:var(--text-secondary);width:32px;">${i + 1}</td><td><strong>${escapeHtml(server)}</strong></td><td class="data-text" style="text-align:right;">${count.toLocaleString()}</td></tr>`
       ).join('');
   return `<div style="margin-bottom:16px;">${chips}</div>
     <p style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px;">Total MCP Calls: <strong style="color:var(--text-primary);">${fmtN(totalMcp)}</strong></p>
@@ -312,12 +312,14 @@ export class DashboardProvider {
     DashboardProvider.currentPanel?.webview.postMessage({ type: 'sharingError', error });
   }
 
-  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = [], copilotQuota?: CopilotQuotaView): vscode.WebviewPanel {
+  static createPanel(context: vscode.ExtensionContext, metrics: AggregatedMetrics, githubUser: ConnectedGitHubUser | undefined, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, acceptance: AcceptanceMetrics | undefined, healthScore: UsageHealthScore | undefined, diffMetrics: DiffMetrics | undefined, insights: Insight[] = [], copilotQuota: CopilotQuotaView | undefined): vscode.WebviewPanel {
     const logoPath = vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png');
 
     if (DashboardProvider.currentPanel) {
       const logoUri = DashboardProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights, copilotQuota);
+      DashboardProvider.currentPanel.webview.html = DashboardProvider.getHtml(
+        metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights, copilotQuota,
+        webviewAssets(DashboardProvider.currentPanel.webview, context.extensionUri));
       DashboardProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return DashboardProvider.currentPanel;
     }
@@ -333,7 +335,8 @@ export class DashboardProvider {
       },
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights, copilotQuota);
+    panel.webview.html = DashboardProvider.getHtml(metrics, githubUser, refreshing, reports, roiConfig, logoUri, acceptance, healthScore, diffMetrics, insights, copilotQuota,
+      webviewAssets(panel.webview, context.extensionUri));
 
     panel.webview.onDidReceiveMessage(
       (message) => {
@@ -396,7 +399,9 @@ export class DashboardProvider {
   }
 
   static showLoadingPanel(context: vscode.ExtensionContext): void {
-    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><style>
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+    <style>
       body{background:#0f1218;color:#e5e2e1;font-family:system-ui,sans-serif;margin:0;}
       .loading-bar{position:fixed;top:0;left:0;right:0;z-index:100;height:3px;background:rgba(0,122,255,0.15);overflow:hidden;}
       .loading-bar-fill{height:100%;width:40%;background:#007AFF;border-radius:0 2px 2px 0;animation:loadslide 1.4s ease-in-out infinite;}
@@ -427,7 +432,7 @@ export class DashboardProvider {
     }
   }
 
-  static getHtml(m: AggregatedMetrics, githubUser?: ConnectedGitHubUser, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance?: AcceptanceMetrics, healthScore?: UsageHealthScore, diffMetrics?: DiffMetrics, insights: Insight[] = [], copilotQuota?: CopilotQuotaView): string {
+  static getHtml(m: AggregatedMetrics, githubUser: ConnectedGitHubUser | undefined, refreshing = false, reports: RepositoryHygieneReport[] = [], roiConfig: RoiConfig = { hourlyRate: 75, tokensPerHourSaved: 3000 }, logoUri = '', acceptance: AcceptanceMetrics | undefined, healthScore: UsageHealthScore | undefined, diffMetrics: DiffMetrics | undefined, insights: Insight[] = [], copilotQuota: CopilotQuotaView | undefined, assets: WebviewAssets): string {
     const fmt = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' :
       n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : n.toString();
     const fmtCost = (n: number) => '$' + n.toFixed(4);
@@ -492,8 +497,46 @@ export class DashboardProvider {
     const copilotDebugLoggingEnabled = vscode.workspace.getConfiguration('github.copilot.chat').get<boolean>('agentDebugLog.fileLogging.enabled', false);
     const copilotHasUsage = copilotMonth.totalTokens > 0 || copilotLastMonth.totalTokens > 0;
     const enableRealCacheDataButton = (copilotChatExtensionInstalled && !copilotDebugLoggingEnabled && copilotHasUsage)
-      ? `<button class="btn-tab" onclick="window.vscode.postMessage({command:'enableCopilotRealCacheData'})" style="background:rgba(57,255,20,0.1);color:#39FF14;border:1px solid rgba(57,255,20,0.3);border-radius:6px;padding:6px 14px;margin-top:8px;cursor:pointer;">✅ Enable Real Cache Data</button>`
+      ? `<button class="btn-tab" data-post="enableCopilotRealCacheData" style="background:rgba(57,255,20,0.1);color:#39FF14;border:1px solid rgba(57,255,20,0.3);border-radius:6px;padding:6px 14px;margin-top:8px;cursor:pointer;">✅ Enable Real Cache Data</button>`
       : '';
+    // Fixed prompt-prefix overhead: the system prompt and tool catalog Copilot resends on
+    // every request. Shown only when sidecars were readable, since otherwise we know nothing.
+    const pp = m.promptPrefix;
+    const promptPrefixSection = pp.sessionsWithPrefix === 0 ? '' : `
+    <div id="section-prompt-prefix" class="section" style="display:none;">
+      <h2>\u{1F9F0} Fixed Prompt Overhead <span style="font-size:0.55em;font-weight:normal;color:var(--text-secondary);vertical-align:middle;">(estimated from Copilot's sidecar files)</span></h2>
+      <p style="font-size:0.85em;color:var(--text-secondary);margin:-12px 0 18px">
+        The system prompt and tool catalog Copilot sends on <em>every</em> request in a session.
+        Measured across ${pp.sessionsWithPrefix} session${pp.sessionsWithPrefix === 1 ? '' : 's'} whose sidecar files were readable.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px;">
+        <div class="mini-card"><div class="mini-label">Fixed Prefix / Request</div><div class="mini-val data-text">${fmt(pp.meanPrefixTokens)}</div></div>
+        ${pp.meanShareOfInput !== undefined ? `<div class="mini-card"><div class="mini-label">Share of a Typical Request</div><div class="mini-val data-text" style="color:${pp.meanShareOfInput > 0.6 ? '#f9e2af' : 'inherit'}">${Math.round(pp.meanShareOfInput * 100)}%</div></div>` : ''}
+        <div class="mini-card"><div class="mini-label">Unused Tool Schema</div><div class="mini-val data-text" style="color:${pp.meanUnusedToolTokens > 10000 ? '#f9e2af' : 'inherit'}">${fmt(pp.meanUnusedToolTokens)}</div></div>
+        <div class="mini-card"><div class="mini-label">Tools Offered</div><div class="mini-val data-text">${pp.toolsOffered}</div></div>
+        <div class="mini-card"><div class="mini-label">Tools Ever Called</div><div class="mini-val data-text">${pp.toolsEverUsed}</div></div>
+      </div>
+      ${pp.neverUsedTools.length > 0 ? `
+      <details class="section" style="margin:0;">
+        <summary style="cursor:pointer;font-weight:600;">${pp.neverUsedTools.length} tool${pp.neverUsedTools.length === 1 ? '' : 's'} offered to the model but never called</summary>
+        <div style="font-size:0.9em;color:var(--text-secondary);line-height:1.6;margin-top:10px;">
+          <p>Each of these shipped its JSON schema on every request of every session that offered
+          it, and no session ever called it. That schema sits in the cached prefix, so it is
+          cheap per request but never free. If a tool comes from an MCP server or tool set you
+          do not need in this workspace, turning that off shrinks every future request.</p>
+          <p><strong>This is "unused in the sessions we could read", not "safe to remove".</strong>
+          A tool you use rarely, or used in a session without sidecar files, will appear here.</p>
+          <table class="data-table" style="margin-top:10px;">
+            <thead><tr><th>Tool</th><th>Sessions offered, never called</th></tr></thead>
+            <tbody>
+              ${pp.neverUsedTools.slice(0, 40).map(t => `<tr><td>${escapeHtml(t.name)}</td><td class="data-text">${t.sessionsOffered}</td></tr>`).join('')}
+            </tbody>
+          </table>
+          ${pp.neverUsedTools.length > 40 ? `<p style="margin-top:8px;">\u2026 and ${pp.neverUsedTools.length - 40} more.</p>` : ''}
+        </div>
+      </details>` : ''}
+    </div>`;
+
     const copilotCacheSection = `
     <div id="section-copilot-cache" class="section" style="display:none;">
       <h2>⚡ GitHub Copilot Cache Efficiency ${copilotCacheHasData ? (copilotCacheIsEstimated ? '<span style="font-size:0.55em;font-weight:normal;color:var(--text-secondary);vertical-align:middle;">(calculated, not measured)</span>' : '<span style="font-size:0.55em;font-weight:normal;color:var(--text-secondary);vertical-align:middle;">(measured via Copilot telemetry)</span>') : ''}</h2>
@@ -563,9 +606,9 @@ export class DashboardProvider {
           ${copilotQuota.daysUntilExhaustion !== null ? `<div class="card-sub" style="margin-top:6px">~${copilotQuota.daysUntilExhaustion}d until exhausted at current pace</div>` : ''}
         </div>` : ''}
         ${id === 'copilot' ? `<div class="card" style="border-top:2px solid var(--text-secondary)">
-          <div class="card-label">AI Credits This Month</div>
+          <div class="card-label">AI Credits This Month ${costSourceBadge(mon.costSource)}</div>
           <div class="card-value data-text">${fmtCredits(mon.estimatedCost)}</div>
-          <div class="card-sub">${fmtCost2(mon.estimatedCost)} spend</div>
+          <div class="card-sub">${fmtCost2(mon.estimatedCost)} spend · ${costSourceLabel(mon.costSource)}</div>
           <div class="card-sub" style="margin-top:6px">vs last month ${fmtDiff(mon.estimatedCost, lmo.estimatedCost)}</div>
         </div>` : ''}
         <div class="card">
@@ -807,7 +850,7 @@ export class DashboardProvider {
         const pct = m.currentMonth.estimatedCost > 0
           ? Math.round((cost / m.currentMonth.estimatedCost) * 100) : 0;
         return `<tr>
-          <td class="data-text">${repo}</td>
+          <td class="data-text">${escapeHtml(repo)}</td>
           <td class="data-text">${fmt(tokens)}</td>
           <td class="data-text">${fmtCost(cost)}</td>
           <td style="width:100px;padding-right:12px;">
@@ -825,7 +868,7 @@ export class DashboardProvider {
       <tr><td>Input efficiency ratio</td><td class="data-text">${roi.inputEfficiencyRatio.toFixed(2)}× (output / input)</td></tr>
       <tr><td>Thinking token overhead</td><td class="data-text">${roi.thinkingOverheadPct.toFixed(1)}%</td></tr>`;
 
-    // ── Fluency scoring ──────────────────────────────────────────────────────
+    // ── Workflow maturity scoring ────────────────────────────────────────────
     const getStageColor = (stage: number) => {
       switch (stage) {
         case 1: return 'var(--stage-1)';
@@ -841,7 +884,7 @@ export class DashboardProvider {
     const interactions = month.interactions;
     const sessions = month.sessions;
     const avgExchanges = month.averageInteractionsPerSession;
-    const fluencyCacheHitPct = month.inputTokens > 0
+    const maturityCacheHitPct = month.inputTokens > 0
       ? Math.round((month.cacheReadTokens / month.inputTokens) * 100)
       : 0;
     const toolCalls = month.toolCalls || {};
@@ -854,13 +897,13 @@ export class DashboardProvider {
     const agentToolCalls = countMatchingTools(toolCalls, /(^task$|agent|subagent|delegate|handoff|worker)/i);
     const agentProviderTokens = (month.providerBreakdown['Claude Code'] || 0) +
       (month.providerBreakdown['Codex'] || 0);
-    const nowForFluency = new Date();
+    const nowForMaturity = new Date();
     const activeDays = new Set(m.daily
       .filter(d => {
         const day = new Date(`${d.date}T00:00:00`);
         return d.totalTokens > 0 &&
-          day.getFullYear() === nowForFluency.getFullYear() &&
-          day.getMonth() === nowForFluency.getMonth();
+          day.getFullYear() === nowForMaturity.getFullYear() &&
+          day.getMonth() === nowForMaturity.getMonth();
       })
       .map(d => d.date)).size;
 
@@ -870,7 +913,7 @@ export class DashboardProvider {
     );
 
     const contextVolumeStage = stageFromThresholds(month.inputTokens, [10_000, 50_000, 200_000]);
-    const cacheReuseStage = stageFromThresholds(fluencyCacheHitPct, [10, 25, 50]);
+    const cacheReuseStage = stageFromThresholds(maturityCacheHitPct, [10, 25, 50]);
     const ceStage = Math.max(contextVolumeStage, cacheReuseStage);
 
     const agStage = Math.max(
@@ -907,6 +950,7 @@ export class DashboardProvider {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+${assets.csp}
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Insights Dashboard</title>
 <style>
@@ -978,7 +1022,7 @@ export class DashboardProvider {
     <div id="navOverlayText" style="color:#6db3ff;font-size:13px;font-weight:500;letter-spacing:0.2px;"></div>
   </div>
   ${navTopbarHtml(logoUri, true, refreshing,
-    (githubUser ? '' : '<button id="btnConnectGithub" onclick="window.vscode.postMessage({command:\'connectGitHub\'})" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">🐙 Connect GitHub</button>')
+    (githubUser ? '' : '<button id="btnConnectGithub" data-post="connectGitHub" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">🐙 Connect GitHub</button>')
     + '<button id="btnShare" style="display:inline-flex;align-items:center;gap:5px;background:var(--bg-surface);border:1px solid var(--border);border-radius:7px;padding:5px 10px;color:var(--text-secondary);cursor:pointer;font-size:12px;font-weight:500;font-family:var(--font-primary);height:28px;white-space:nowrap;transition:all 0.15s ease;">⬆ Share</button>')}
   ${refreshing ? '<div class="loading-bar"><div class="loading-bar-fill"></div></div><div class="loading-banner"><div class="loading-spinner"></div>Refreshing dashboard…</div>' : ''}
   ${navPagebarHtml('overview', 'Dashboard')}
@@ -1200,6 +1244,7 @@ export class DashboardProvider {
   </div>
   <div id="cards-copilot" class="cards" style="display:none">${buildProvCards('copilot')}</div>
   ${copilotBudgetSection}
+  ${promptPrefixSection}
   ${copilotCacheSection}
   <div id="cards-claudeCode" class="cards" style="display:none">${buildProvCards('claudeCode')}</div>
   <div id="cards-codex" class="cards" style="display:none">${buildProvCards('codex')}</div>
@@ -1220,9 +1265,9 @@ export class DashboardProvider {
     <div style="position:relative;height:240px"><canvas id="dashChart"></canvas></div>
   </div>
 
-  <!-- ── Fluency Score ─────────────────────────────────────────────── -->
+  <!-- ── AI Workflow Maturity ──────────────────────────────────────── -->
   <div class="section" style="display:hidden;">
-    <h2>🎯 Developer Fluency Score (This Month)</h2>
+    <h2>🎯 AI Workflow Maturity (This Month)</h2>
     <div class="score-card" style="border-left: 4px solid ${getStageColor(overallStage)}">
       <div>
         <div style="font-size: 1.1em; font-weight: 600; margin-bottom: 6px;">Overall: ${overallLabels[overallStage]}</div>
@@ -1235,7 +1280,7 @@ export class DashboardProvider {
     <div class="score-grid">
       ${[
         ['💬 Prompt Engineering', peStage, `${fmt(interactions)} interactions · ${avgExchanges.toFixed(1)} avg/session`],
-        ['📎 Context Engineering', ceStage, `${fmt(month.inputTokens)} input ctx · ${fluencyCacheHitPct}% cache hit`],
+        ['📎 Context Engineering', ceStage, `${fmt(month.inputTokens)} input ctx · ${maturityCacheHitPct}% cache hit`],
         ['🤖 Agentic Usage', agStage, `${agentTurns} agent/CLI turns · ${agentToolCalls} agent tool calls · ${fmt(agentProviderTokens)} agent tokens`],
         ['🔧 Tool Usage', tuStage, `${fmt(totalToolCalls)} calls · ${numTools} unique tools`],
         ['⚙️ Customization', cuStage, `${numModels} models · ${numRepos} repos`],
@@ -1445,20 +1490,33 @@ export class DashboardProvider {
 
   ${(() => {
     if (!githubUser) { return ''; }
-    const quotaLabel = !copilotQuota ? ''
-      : copilotQuota.unlimited ? ' · unlimited quota'
-      : copilotQuota.isOverQuota ? ' · over quota'
-      : ` · ${Math.round(copilotQuota.percentUsed)}% quota used`;
-    return '<button class="copilot-pill" onclick="window.vscode.postMessage({command:\'showPricing\'})">🐙 '
-      + fmtCredits(copilotMonth.estimatedCost) + ' credits · ' + githubUser.login + quotaLabel + '</button>';
+    // Prefer GitHub's live remaining balance; the local-log estimate only
+    // covers sessions on this machine and is shown as "used", never as a balance.
+    const creditsLabel = !copilotQuota
+      ? `${fmt(Math.round(copilotMonth.estimatedCost / 0.01))} credits used (local)`
+      : copilotQuota.unlimited ? 'unlimited'
+      : copilotQuota.isOverQuota ? `over quota by ${fmt(copilotQuota.overageAmount)}`
+      : `${fmt(Math.round(copilotQuota.remaining))} / ${fmt(copilotQuota.entitlement)} credits left`;
+    const quotaLabel = copilotQuota && !copilotQuota.unlimited && !copilotQuota.isOverQuota
+      ? ` · ${Math.round(copilotQuota.percentUsed)}% used`
+      : '';
+    return '<button class="copilot-pill" data-post="showPricing">🐙 '
+      + creditsLabel + ' · ' + githubUser.login + quotaLabel + '</button>';
   })()}
   <div class="footer">AI Insights · Token usage is tracked locally. ${githubUser ? '1 GitHub Copilot AI credit = $0.01 USD.' : 'Connect GitHub Copilot to see budget tracking.'}</div>
   </div><!-- /ns-content -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script>
+  <script nonce="${assets.nonce}" src="${assets.chartJsUri}"></script>
+  <script nonce="${assets.nonce}">
     if (typeof window.vscode === 'undefined') {
       window.vscode = acquireVsCodeApi();
     }
+
+    ${escJs()}
+
+    document.addEventListener('click', function(ev) {
+      var el = ev.target.closest('[data-post]');
+      if (el && window.vscode) { window.vscode.postMessage({ command: el.getAttribute('data-post') }); }
+    });
 
     var allPeriodData = ${allPeriodDataJson};
     var allRepoData = ${allRepoDataJson};
@@ -1773,7 +1831,7 @@ export class DashboardProvider {
             var el = document.getElementById('cards-' + id);
             if (el) { el.style.display = id === prov ? '' : 'none'; }
           });
-          var copilotOnly = ['section-copilot-budget', 'section-copilot-cache', 'section-copilot-acceptance', 'section-copilot-diff'];
+          var copilotOnly = ['section-copilot-budget', 'section-copilot-cache', 'section-copilot-acceptance', 'section-copilot-diff', 'section-prompt-prefix'];
           copilotOnly.forEach(function(id) {
             var el = document.getElementById(id);
             if (el) { el.style.display = prov === 'copilot' ? '' : 'none'; }
@@ -1941,7 +1999,7 @@ export class DashboardProvider {
         } else {
           repoTbody.innerHTML = rd.items.map(function(item) {
             var pct = rd.totalCost > 0 ? Math.round((item.cost/rd.totalCost)*100) : 0;
-            return '<tr><td class="data-text">'+item.repo+'</td><td class="data-text">'+fmtN(item.tokens)+'</td><td class="data-text">'+fmtC(item.cost)+'</td>'
+            return '<tr><td class="data-text">'+esc(item.repo)+'</td><td class="data-text">'+fmtN(item.tokens)+'</td><td class="data-text">'+fmtC(item.cost)+'</td>'
               +'<td style="width:100px;padding-right:12px"><div style="background:rgba(255,255,255,0.08);border-radius:2px;height:4px;overflow:hidden"><div style="background:#007AFF;width:'+pct+'%;height:100%"></div></div><span style="font-size:0.75em;color:var(--text-secondary)">'+pct+'%</span></td></tr>';
           }).join('');
         }
@@ -2010,7 +2068,7 @@ export class DashboardProvider {
           var pct = maxCalls > 0 ? Math.round((count / maxCalls) * 100) : 0;
           return '<tr>'
             + '<td style="color:var(--text-secondary);width:32px">' + (i+1) + '</td>'
-            + '<td><strong>' + server + '</strong></td>'
+            + '<td><strong>' + esc(server) + '</strong></td>'
             + '<td class="data-text" style="text-align:right">' + count.toLocaleString() + '</td>'
             + '<td style="width:100px;padding-right:12px"><div style="background:rgba(255,255,255,0.08);border-radius:2px;height:4px;overflow:hidden"><div style="background:#39FF14;width:'+pct+'%;height:100%"></div></div></td>'
             + '</tr>';
@@ -2173,7 +2231,7 @@ export class DashboardProvider {
         }
 
         if (msg.type === 'sharingError') {
-          shareUrlRows.innerHTML = '<span style="font-size:12px;color:#ff8a8a;">⚠ ' + (msg.error || 'Unknown error') + '</span>';
+          shareUrlRows.innerHTML = '<span style="font-size:12px;color:#ff8a8a;">⚠ ' + esc(msg.error || 'Unknown error') + '</span>';
           if (qrBtn) { qrBtn.style.display = 'none'; }
           sharePanel.style.display = 'block';
         }

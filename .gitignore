@@ -1,7 +1,12 @@
 node_modules/
 dist/
+app/
 out/
 *.vsix
 .vscode-test/
 .others
-wiki
+out-test/
+scripts
+docs
+.vscode
+tmp-*

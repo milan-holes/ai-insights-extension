@@ -1,4 +1,7 @@
+import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { providerIcon } from './providerIcons';
+import { CostSource } from '../types';
 
 export type NavTab =
   | 'overview'
@@ -178,6 +181,87 @@ export function navJs(): string {
   `;
 }
 
+/**
+ * The Content-Security-Policy every panel ships.
+ *
+ * Webviews run with extension privileges, so anything that executes here can
+ * post messages back to the host. `default-src 'none'` plus a per-render nonce
+ * means session-derived content that slips past escaping still cannot run, and
+ * nothing can be loaded from a remote origin — Chart.js and Mermaid are served
+ * from `assets/vendor/` rather than a CDN precisely so this can hold.
+ *
+ * `style-src 'unsafe-inline'` is unavoidable: the views are built almost
+ * entirely from inline `style=` attributes. Inline styles cannot execute script.
+ * `img-src data:` covers the share QR code, which arrives as a data URI.
+ */
+export function cspMeta(nonce: string, cspSource: string): string {
+  return `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; `
+    + `img-src ${cspSource} data:; font-src ${cspSource}; `
+    + `style-src 'unsafe-inline' ${cspSource}; script-src 'nonce-${nonce}';">`;
+}
+
+/** A fresh per-render CSP nonce. */
+export function cspNonce(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+/** Minimal structural view of the parts of vscode.Webview these helpers need. */
+interface WebviewLike {
+  cspSource: string;
+  asWebviewUri(uri: vscode.Uri): vscode.Uri;
+}
+
+/**
+ * Per-render CSP nonce, the matching `<meta>` tag, and the local URIs for the
+ * vendored webview libraries.
+ *
+ * Chart.js and Mermaid ship in `assets/vendor/` (see `scripts/vendor-assets.sh`)
+ * instead of being pulled from cdn.jsdelivr.net at runtime, so no webview has to
+ * allowlist a remote script origin.
+ */
+export interface WebviewAssets {
+  nonce: string;
+  csp: string;
+  chartJsUri: string;
+  mermaidUri: string;
+}
+
+export function webviewAssets(webview: WebviewLike, extensionUri: vscode.Uri): WebviewAssets {
+  const nonce = cspNonce();
+  const vendor = (file: string) =>
+    webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'assets', 'vendor', file)).toString();
+  return {
+    nonce,
+    csp: cspMeta(nonce, webview.cspSource),
+    chartJsUri: vendor('chart.umd.min.js'),
+    mermaidUri: vendor('mermaid.min.js'),
+  };
+}
+
+/**
+ * Escapes a string for interpolation into webview HTML, in both text and
+ * quoted-attribute contexts.
+ *
+ * Session-derived strings are NOT trustworthy: repository labels come from a
+ * directory name on disk, MCP server and tool names come from parsed session
+ * logs, and shell command strings come straight out of provider transcripts.
+ * Any of those may contain markup or quotes, so every one of them must go
+ * through this before reaching HTML.
+ */
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c] as string));
+}
+
+/**
+ * The same escaper as {@link escapeHtml}, as source text to embed in a webview's
+ * inline script. Views that build rows client-side need an identical `esc()`.
+ */
+export function escJs(): string {
+  return `function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}`;
+}
+
 /** All nav-related vscode commands that each panel's onDidReceiveMessage should handle. */
 export const NAV_COMMANDS: Record<string, string> = {
   showDashboard: 'aiInsights.showDashboard',
@@ -195,3 +279,40 @@ export const NAV_COMMANDS: Record<string, string> = {
   showAIStructure: 'aiInsights.showAIStructure',
   showSessionReplay: 'aiInsights.showSessionReplay',
 };
+
+/**
+ * Provenance labels for a cost figure, so a screen never shows an estimate and a billed
+ * total in the same typeface without saying which is which. Mirrors the existing
+ * "(calc.)" convention used for Copilot cache tokens.
+ *
+ * See core/costEstimation.ts and wiki/copilot-billing-calibration.md.
+ */
+const COST_SOURCE_COPY: Record<CostSource, { badge: string; label: string; title: string }> = {
+  billed: {
+    badge: '✅',
+    label: 'billed by GitHub',
+    title: "Exact cost from GitHub's own billing record (copilotUsageNanoAiu) in Copilot's debug log - not an estimate.",
+  },
+  calibrated: {
+    badge: '🎯',
+    label: 'calibrated estimate',
+    title: "Our token-rate estimate, scaled by a correction factor measured against this machine's own GitHub-billed requests.",
+  },
+  estimated: {
+    badge: '🧮',
+    label: 'estimated from token rates',
+    title: 'Our token-rate estimate. No GitHub-billed request was available to check it against.',
+  },
+};
+
+/** A small icon with a hover explanation of where a cost figure came from. */
+export function costSourceBadge(source: CostSource | undefined): string {
+  if (!source) { return ''; }
+  const copy = COST_SOURCE_COPY[source];
+  return `<span title="${escapeHtml(copy.title)}" style="font-size:0.8em;font-weight:normal;vertical-align:middle;">${copy.badge}</span>`;
+}
+
+/** Plain-language provenance, for a card subtitle or table caption. */
+export function costSourceLabel(source: CostSource | undefined): string {
+  return source ? COST_SOURCE_COPY[source].label : '';
+}

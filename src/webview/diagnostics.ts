@@ -7,7 +7,7 @@ import { DiagnosticReport, ProviderId } from '../types';
 import { BaseProvider } from '../providers/base';
 import { CacheManager } from '../core/cacheManager';
 import { designTokensCss } from './designSystem';
-import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
+import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS, cspMeta, cspNonce } from './navShared';
 
 function escapeHtml(value: string): string {
   return value
@@ -81,7 +81,8 @@ export class DiagnosticsProvider {
 
     if (DiagnosticsProvider.currentPanel) {
       const logoUri = DiagnosticsProvider.currentPanel.webview.asWebviewUri(logoPath).toString();
-      DiagnosticsProvider.currentPanel.webview.html = DiagnosticsProvider.getHtml(report, refreshing, logoUri);
+      DiagnosticsProvider.currentPanel.webview.html = DiagnosticsProvider.getHtml(
+        report, refreshing, logoUri, cspNonce(), DiagnosticsProvider.currentPanel.webview.cspSource);
       DiagnosticsProvider.currentPanel.reveal(vscode.ViewColumn.One);
       return DiagnosticsProvider.currentPanel;
     }
@@ -91,7 +92,7 @@ export class DiagnosticsProvider {
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'assets')] }
     );
     const logoUri = panel.webview.asWebviewUri(logoPath).toString();
-    panel.webview.html = DiagnosticsProvider.getHtml(report, refreshing, logoUri);
+    panel.webview.html = DiagnosticsProvider.getHtml(report, refreshing, logoUri, cspNonce(), panel.webview.cspSource);
 
     panel.webview.onDidReceiveMessage(async msg => {
       const cmd = NAV_COMMANDS[msg.command];
@@ -103,6 +104,24 @@ export class DiagnosticsProvider {
         return;
       }
       if (msg.command === 'updateSetting') {
+        // Only this extension's own contributed settings may be written from the
+        // webview, and only with a value of the type the schema declares. Without
+        // this the panel would relay an arbitrary global settings write from
+        // webview content — enough to point VS Code at an attacker-chosen binary
+        // through unrelated settings such as terminal or task configuration.
+        const properties = (context.extension.packageJSON?.contributes?.configuration?.properties
+          ?? {}) as Record<string, ConfigPropertySchema>;
+        const schema = Object.prototype.hasOwnProperty.call(properties, msg.key)
+          ? properties[msg.key]
+          : undefined;
+        if (!schema) { return; }
+
+        const expected = schema.type ?? 'string';
+        const actual = Array.isArray(msg.value) ? 'array' : typeof msg.value;
+        if (expected !== actual) { return; }
+        if (expected === 'array' && !(msg.value as unknown[]).every(v => typeof v === 'string')) { return; }
+        if (schema.enum && !schema.enum.includes(msg.value)) { return; }
+
         const config = vscode.workspace.getConfiguration();
         await config.update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
         vscode.commands.executeCommand('aiInsights.showDiagnostics');
@@ -135,10 +154,10 @@ export class DiagnosticsProvider {
     return `<input type="text" class="setting-input" data-key="${key}" data-type="string" value="${escapeHtml(String(s.value ?? ''))}">`;
   }
 
-  static getHtml(r: DiagnosticReport, refreshing = false, logoUri = ''): string {
+  static getHtml(r: DiagnosticReport, refreshing = false, logoUri = '', nonce = '', cspSource = ''): string {
     const providerRows = r.providers.map(p => `<tr>
       <td class="data-text">${p.id}</td><td>${p.enabled ? '✅' : '❌'}</td>
-      <td class="data-text">${p.sessionFilesFound}</td><td class="data-text">${p.sessionDirs.join('<br>')}</td>
+      <td class="data-text">${p.sessionFilesFound}</td><td class="data-text">${p.sessionDirs.map(escapeHtml).join('<br>')}</td>
     </tr>`).join('');
 
     const settingsRows = r.settings.map(s => {
@@ -152,6 +171,7 @@ export class DiagnosticsProvider {
 
     return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+${cspMeta(nonce, cspSource)}
 <title>AI Insights - Settings</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap');
@@ -205,7 +225,7 @@ export class DiagnosticsProvider {
   <table><thead><tr><th>Provider</th><th>Enabled</th><th>Files Found</th><th>Directories</th></tr></thead>
   <tbody>${providerRows}</tbody></table>
 </div><!-- /ns-content -->
-<script>
+<script nonce="${nonce}">
   window.vscode = acquireVsCodeApi();
   ${navJs()}
   (function() {

@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { BenchmarkTask, JudgeResult } from './types';
 
 const JUDGE_PROMPT = `You are evaluating an AI assistant's response for accuracy and task completion. Respond with valid JSON only.

@@ -1,6 +1,8 @@
-# AI Insights - Token Tracker for VS Code
+# AI Insights - Token Tracker
 
-Track token usage, costs, and AI metrics across **GitHub Copilot**, **Antigravity**, **Claude Code**, and **Codex** - all from your VS Code status bar.
+Track token usage, costs, and AI metrics across **GitHub Copilot**, **Antigravity**, **Claude Code**, **Codex**, **Copilot for JetBrains**, and **Visual Studio Copilot Chat** from either the VS Code extension or the standalone Electron app.
+
+The extension gives editor-integrated status bar, panels, commands, and token-selection tools. The standalone app gives local analytics without installing the editor extension.
 
 All data is read from local session logs - **nothing leaves your machine**.
 
@@ -22,6 +24,21 @@ Track usage across AI coding assistants simultaneously:
 | **Antigravity**    | `~/.gemini/antigravity/brain/`                                           | Estimated from conversation text                 |
 | **Claude Code**    | `~/.claude/projects/`                                                    | Actual input/output/cache token counts           |
 | **Codex**          | `~/.codex/sessions/`                                                     | Actual usage snapshots from local Codex rollouts |
+| **Copilot (JetBrains)** | `~/.copilot/jb/*/partition-*.jsonl`                                  | Estimated from rendered prompt/response text     |
+| **Visual Studio**  | `.vs/**/copilot-chat/**/sessions/*`, VS AppData `VSGitHubCopilot` store  | Estimated from MessagePack chat content          |
+
+### 🖥️ Standalone App
+
+AI Insights also ships a separate Electron app for users who want local analytics without the editor extension. It uses the same provider parsers and supports all providers.
+
+The desktop app reuses the extension's views and design system, including session analysis/replay/comparison, pricing, calculator, repository tools, and CLI/API benchmarks. Use **Open Repository** for file-based workflows and **Tools** for additional views. GitHub quota connects through `gh auth login`; live Claude quota is available as an opt-in setting.
+
+```bash
+npm run electron:compile
+npm run electron:start
+```
+
+See [docs/electron-standalone.md](docs/electron-standalone.md) for build, storage, and scope details.
 
 ### 📈 Dashboard Views
 
@@ -44,7 +61,11 @@ Per-model pricing for 30+ models across OpenAI, Anthropic, and Google:
 
 ### 🔗 Real GitHub Copilot Credits (optional)
 
-Connect your GitHub account and AI Insights pulls your **real, live Copilot premium-request quota** (entitlement, remaining, reset date, plan tier) straight from GitHub - see [GitHub Copilot: Real AI Credits/Quota Usage](#-github-copilot-real-ai-creditsquota-usage) below.
+Connect your GitHub account and AI Insights pulls your **real, live Copilot premium-request quota** (entitlement, remaining, reset date, plan tier) straight from GitHub - see [GitHub Copilot: Real AI Credits/Quota Usage](#-github-copilot-real-ai-creditsquota-usage) below. The Copilot screen also includes a **Budget Planner**: pick a model-cost multiplier and an optional reserve to see sustainable requests/day and /week until reset.
+
+### 🧠 Real Claude Code Plan-Quota (live, on by default)
+
+The Claude panel shows your real 5-hour and weekly plan-quota usage %, the same numbers shown on claude.ai's usage page - see [Claude Code: Real Plan-Quota Usage](#-claude-code-real-plan-quota-usage-live) below.
 
 ### 🧪 Prompt A/B Testing
 
@@ -70,6 +91,7 @@ AI Insights computes every metric from **AI session logs stored locally on your 
 - **Hidden system prompts** - providers inject a system prompt plus tool/agent instructions server-side that aren't always exposed in local session logs, so real input/context size can be higher than what's shown. Where this applies (currently Copilot JSON sessions), the `aiInsights.providers.copilot.inputTokenMultiplier` setting lets you set a default multiplier to approximate the missing overhead.
 - **GitHub Copilot cache tracking depends on one Copilot setting** - `chatSessions`/`transcripts` files alone never carry a cache-read/cache-write breakdown, so by default Copilot's Cache Hit Rate / Cache Savings numbers are a **calculated estimate** (turn-over-turn context diffing, flagged "(calc.)" everywhere it's shown), not measured data. If you turn on GitHub Copilot's own `github.copilot.chat.agentDebugLog.fileLogging` setting, Copilot additionally writes real per-request `inputTokens`/`outputTokens`/`cachedTokens` to local debug-log files, and AI Insights reads those automatically and uses them in place of the estimate wherever they exist - real data for sessions logged after you enable it, calculated estimates for everything else (older sessions, or if you leave it off). AI Insights will offer to turn this Copilot setting on for you the first time it runs (one-time prompt, never silent) - see "GitHub Copilot: Real Cache/Token Data" below for what that involves and how to trigger it manually. Cache metrics for providers with real per-request cache counts by default (e.g. Claude Code) are unaffected.
 - **Single-turn Copilot sessions never show a cache estimate, by design** - the calculated estimate above works by comparing a turn's context size to the _previous turn in the same session_; a session with only one exchange (one message, one reply) has no earlier turn to compare against, so its cache numbers are `0` regardless of settings. This is expected, not a sign the estimate is broken - most Copilot sessions on a typical machine turn out to be single-turn, which is usually why cache data looks sparse when scanning older history.
+- **Claude Code plan-quota makes one outbound API call, on by default** - see [Claude Code: Real Plan-Quota Usage](#-claude-code-real-plan-quota-usage-live) below for exactly what it sends and how to turn it off.
 
 Treat these numbers as a **local, best-effort estimate** for tracking trends - not an exact reconciliation of your invoice.
 
@@ -111,6 +133,15 @@ Everything above (token counts, cost estimates, cache stats) is derived from loc
   - This uses an undocumented GitHub endpoint (`copilot_internal/user`), so it can occasionally 403/404 for some accounts, orgs, or during outages - AI Insights fails silently in that case and simply won't show real quota data until the next successful refresh.
   - This is independent of the "real cache/token data" toggle above - one is about per-request token counts from local debug logs, the other is about your account-level quota from GitHub's servers. You can use either, both, or neither.
 
+## 🧠 Claude Code: Real Plan-Quota Usage (live)
+
+The Claude panel's Usage Limits cards normally show a **local estimate** derived from session-log timestamps. If you're signed into Claude Code, AI Insights can instead show your **real** 5-hour and weekly plan-quota utilization % - the same numbers on `claude.ai → Settings → Usage` - with no extra setup.
+
+- **How it works** - Claude Code already stores an OAuth access token at `~/.claude/.credentials.json` from `claude login`. AI Insights reuses that token to make a minimal (`max_tokens: 1`) request to `api.anthropic.com` and reads the `anthropic-ratelimit-unified-5h-utilization` / `-7d-utilization` response headers - no message content is sent beyond a single filler character, and nothing is stored remotely.
+- **On by default** - unlike the GitHub Copilot quota above, this needs no separate "connect" step: it just works once you're signed into Claude Code, at most once every 5 minutes and only while Claude Code sessions are detected.
+- **Turning it off** - set `aiInsights.providers.claudeCode.liveQuota.enabled` to `false` to disable the outbound call entirely; the panel falls back to the local session-log estimate (badge changes from "live · Anthropic API" back to "session files").
+- **Notes/limitations** - the credentials file format is undocumented, so this can fail silently (falls back to the estimate) if Claude Code changes its storage format, if you're signed out, or if you use an API-key-only setup with no OAuth session on disk.
+
 ## Install
 
 ### From Source
@@ -125,6 +156,14 @@ npm run compile
 ### Run in Development
 
 Press `F5` in VS Code to launch the Extension Development Host.
+
+### Run Standalone Electron App
+
+```bash
+npm run electron:start
+```
+
+The standalone build is separate from the extension build and writes to `dist/electron/`.
 
 ### Package as VSIX
 
@@ -160,6 +199,7 @@ code --install-extension ai-insights-0.1.0.vsix
 | `aiInsights.providers.copilot.promptToEnableRealCacheData` | `true`  | One-time prompt offering to enable Copilot's real cache/token telemetry - see above                                                                                                                                                                                                               |
 | `aiInsights.providers.antigravity.enabled`                 | `true`  | Enable Antigravity tracking                                                                                                                                                                                                                                                                       |
 | `aiInsights.providers.claudeCode.enabled`                  | `true`  | Enable Claude Code tracking                                                                                                                                                                                                                                                                       |
+| `aiInsights.providers.claudeCode.liveQuota.enabled`        | `true`  | Show real Claude Code plan-quota (live 5h/7d %) - see [Claude Code: Real Plan-Quota Usage](#-claude-code-real-plan-quota-usage-live) above                                                                                                                                                       |
 | `aiInsights.providers.codex.enabled`                       | `true`  | Enable Codex tracking                                                                                                                                                                                                                                                                             |
 | `aiInsights.providers.<provider>.additionalSessionPaths`   | `[]`    | Extra folders to scan for that provider's sessions, for non-standard storage locations (moved home dir, synced backup, remote mount, etc.). Available for every provider - see the ⚙️ Settings panel (`AI Insights: Show Diagnostics`) for the full editable list with per-provider descriptions. |
 | `aiInsights.refreshIntervalMinutes`                        | `5`     | Auto-refresh interval                                                                                                                                                                                                                                                                             |
@@ -209,12 +249,12 @@ Supported IDEs (sessions stored as JSON - readable):
 
 WSL is also supported - the extension automatically scans Windows-side AppData paths via `/mnt/c/Users/`.
 
-**Not fully supported** (binary session formats, not parseable):
+Additional Copilot IDE/session stores:
 
-| IDE                                                | Reason                                                                            |
-| -------------------------------------------------- | --------------------------------------------------------------------------------- |
-| JetBrains (PyCharm, WebStorm, PhpStorm, IntelliJ…) | Sessions stored in Xodus binary DB (`.idea/copilot/chatSessions/`), no JSON files |
-| Visual Studio                                      | Sessions stored as binary files (`.vs/<project>/copilot-chat/sessions/`)          |
+| IDE                                                | Location                                                                                              | Notes                                   |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| JetBrains (PyCharm, WebStorm, PhpStorm, IntelliJ…) | `~/.copilot/jb/{conversationId}/partition-{n}.jsonl`                                                  | Estimated token counts                  |
+| Visual Studio                                      | `.vs/**/copilot-chat/**/sessions/*` and `%LOCALAPPDATA%\Microsoft\VisualStudio\*\VSGitHubCopilot\...` | MessagePack sessions, estimated tokens |
 
 ### Antigravity
 

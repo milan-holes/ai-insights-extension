@@ -121,9 +121,10 @@ export function daysUntilReset(resetDateUtc: string, asOf = new Date()): { days:
 }
 
 /**
- * Persists a rolling local history of quota snapshots (max 90) so burn-rate
- * predictions can be derived, keyed per GitHub login so switching accounts
- * doesn't mix usage data.
+ * Persists a rolling local history of quota snapshots (max 90), keyed per
+ * GitHub login so switching accounts doesn't mix usage data. Not used for the
+ * burn-rate prediction (see getQuotaPrediction) - snapshots span billing
+ * cycles and plan changes, which made pairwise deltas meaningless.
  */
 export class QuotaHistoryStore {
   private _snapshots: LocalQuotaSnapshot[] = [];
@@ -156,56 +157,83 @@ export class QuotaHistoryStore {
 }
 
 /**
- * Burn-rate prediction from consecutive snapshot pairs 1-72h apart (mirrors
- * the heuristic vscode-copilot-insights uses in its predictions.ts).
+ * Burn-rate prediction from GitHub's own cycle-to-date figure: requests used
+ * this billing cycle / days elapsed since the cycle started (reset date minus
+ * one calendar month). Uses only the current cycle and current entitlement, so
+ * plan changes and previous cycles in the local snapshot history cannot leak
+ * in, and requests made while the editor was closed still count. Elapsed time
+ * is floored at one day so the first hours of a cycle don't extrapolate a burst.
  */
 export function getQuotaPrediction(
-  history: readonly LocalQuotaSnapshot[],
   quota: CopilotQuotaSnapshot,
   resetDateUtc: string,
+  asOf = new Date(),
 ): QuotaPrediction | null {
-  if (history.length < 2 || quota.unlimited) { return null; }
+  if (quota.unlimited || quota.entitlement <= 0) { return null; }
+  const resetMs = new Date(resetDateUtc).getTime();
+  if (Number.isNaN(resetMs)) { return null; }
 
-  const usageData: number[] = [];
-  for (let i = 0; i < history.length - 1; i++) {
-    const current = history[i];
-    const previous = history[i + 1];
-    const hoursDiff = (new Date(current.timestamp).getTime() - new Date(previous.timestamp).getTime()) / 3_600_000;
-    if (hoursDiff < 1 || hoursDiff > 72) { continue; }
-    const usage = previous.remaining - current.remaining;
-    if (usage > 0) { usageData.push((usage / hoursDiff) * 24); }
-  }
+  const cycleStart = new Date(resetMs);
+  cycleStart.setUTCMonth(cycleStart.getUTCMonth() - 1);
+  const elapsedDays = (asOf.getTime() - cycleStart.getTime()) / 86_400_000;
+  if (elapsedDays <= 0) { return null; }
 
-  if (usageData.length === 0) { return null; }
+  const used = Math.max(0, quota.entitlement - quota.quota_remaining);
+  if (used === 0) { return null; }
 
-  const predictedDailyUsage = usageData.reduce((sum, u) => sum + u, 0) / usageData.length;
+  const predictedDailyUsage = used / Math.max(elapsedDays, 1);
   const confidence: QuotaPrediction['confidence'] =
-    usageData.length >= 7 ? 'high' : usageData.length >= 3 ? 'medium' : 'low';
+    elapsedDays >= 7 ? 'high' : elapsedDays >= 3 ? 'medium' : 'low';
 
-  let daysUntilExhaustionValue: number | null = null;
-  let willExhaustBeforeReset = false;
-  if (predictedDailyUsage > 0) {
-    daysUntilExhaustionValue = Math.floor(quota.remaining / predictedDailyUsage);
-    const reset = daysUntilReset(resetDateUtc);
-    if (reset) {
-      willExhaustBeforeReset = daysUntilExhaustionValue < (reset.days + reset.hours / 24);
-    }
-  }
+  const daysUntilExhaustionValue = Math.floor(Math.max(0, quota.remaining) / predictedDailyUsage);
+  const reset = daysUntilReset(resetDateUtc, asOf);
+  const willExhaustBeforeReset = reset !== null
+    && daysUntilExhaustionValue < (reset.days + reset.hours / 24);
 
   return {
     predictedDailyUsage: Math.round(predictedDailyUsage),
     daysUntilExhaustion: daysUntilExhaustionValue,
     willExhaustBeforeReset,
     confidence,
-    dataPoints: usageData.length,
+    dataPoints: Math.floor(elapsedDays),
+  };
+}
+
+export interface BudgetPlan {
+  sustainableDailyRequests: number;
+  sustainableWeeklyRequests: number;
+  daysRemaining: number;
+}
+
+/**
+ * Sustainable request-pacing plan: how many requests/day (and /week) you can
+ * make without exhausting quota before reset, given a model cost multiplier
+ * (e.g. 0.33x for a cheap model, 3x for an expensive one) and an optional
+ * reserve to keep untouched. Resolves copilotQuota's own long-standing "no
+ * per-model premium-request multiplier" gap (see costEstimation.md gap #1).
+ */
+export function computeBudgetPlan(
+  quota: CopilotQuotaView,
+  modelMultiplier: number,
+  reserveCredits: number,
+): BudgetPlan | null {
+  if (quota.unlimited) { return null; }
+  const daysRemaining = Math.max(quota.resetDays + quota.resetHours / 24, 1 / 24);
+
+  const usable = Math.max(0, quota.remaining - reserveCredits);
+  const safeMultiplier = modelMultiplier > 0 ? modelMultiplier : 1;
+  const sustainableDailyRequests = usable / daysRemaining / safeMultiplier;
+  const sustainableWeeklyRequests = sustainableDailyRequests * Math.min(7, daysRemaining);
+
+  return {
+    sustainableDailyRequests: Math.round(sustainableDailyRequests * 10) / 10,
+    sustainableWeeklyRequests: Math.round(sustainableWeeklyRequests * 10) / 10,
+    daysRemaining: Math.round(daysRemaining * 10) / 10,
   };
 }
 
 /** Builds the flattened view model shared by the status bar and dashboard card. */
-export function buildQuotaView(
-  data: CopilotQuotaData,
-  history: readonly LocalQuotaSnapshot[],
-): CopilotQuotaView | undefined {
+export function buildQuotaView(data: CopilotQuotaData): CopilotQuotaView | undefined {
   const premium = findPremiumQuota(data);
   if (!premium) { return undefined; }
   const reset = daysUntilReset(data.quota_reset_date_utc) ?? { days: 0, hours: 0 };
@@ -228,7 +256,7 @@ export function buildQuotaView(
   }
 
   const stats = computeQuotaStats(premium);
-  const prediction = getQuotaPrediction(history, premium, data.quota_reset_date_utc);
+  const prediction = getQuotaPrediction(premium, data.quota_reset_date_utc);
   return {
     planLabel: data.copilot_plan,
     unlimited: false,
@@ -241,6 +269,6 @@ export function buildQuotaView(
     resetDays: reset.days,
     resetHours: reset.hours,
     predictedDailyUsage: prediction?.predictedDailyUsage ?? null,
-    daysUntilExhaustion: prediction?.daysUntilExhaustion ?? null,
+    daysUntilExhaustion: prediction?.willExhaustBeforeReset ? prediction.daysUntilExhaustion : null,
   };
 }

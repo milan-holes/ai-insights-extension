@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import { AggregatedMetrics, Session } from '../types';
 import { navCss, navTopbarHtml, navPagebarHtml, navJs, NAV_COMMANDS } from './navShared';
 import { designTokensCss } from './designSystem';
+import { ClaudeRateLimitSnapshot } from '../core/claudeQuota';
 
 const PLAN_STATE_KEY    = 'aiInsights.claudePlan';
 const WINDOW_CONFIG_KEY = 'aiInsights.windowConfig';
@@ -122,13 +123,14 @@ export class ClaudeAccountViewProvider {
     context: vscode.ExtensionContext,
     metrics: AggregatedMetrics | undefined,
     sessions: Session[],
+    claudeQuota?: ClaudeRateLimitSnapshot,
   ): Promise<void> {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
     const plan = context.globalState.get<ClaudePlan>(PLAN_STATE_KEY, 'pro');
 
     if (this.currentPanel) {
       this.currentPanel.reveal(column);
-      this.currentPanel.webview.html = this.getHtml(this.currentPanel.webview, context, metrics, plan, sessions);
+      this.currentPanel.webview.html = this.getHtml(this.currentPanel.webview, context, metrics, plan, sessions, claudeQuota);
       return;
     }
 
@@ -143,7 +145,7 @@ export class ClaudeAccountViewProvider {
       },
     );
     this.currentPanel = panel;
-    panel.webview.html = this.getHtml(panel.webview, context, metrics, plan, sessions);
+    panel.webview.html = this.getHtml(panel.webview, context, metrics, plan, sessions, claudeQuota);
     panel.onDidDispose(() => { this.currentPanel = undefined; }, null, context.subscriptions);
 
     panel.webview.onDidReceiveMessage(async (msg) => {
@@ -154,7 +156,7 @@ export class ClaudeAccountViewProvider {
         case 'setPlan': {
           const newPlan = msg.plan as ClaudePlan;
           await context.globalState.update(PLAN_STATE_KEY, newPlan);
-          panel.webview.html = this.getHtml(panel.webview, context, metrics, newPlan, sessions);
+          panel.webview.html = this.getHtml(panel.webview, context, metrics, newPlan, sessions, claudeQuota);
           break;
         }
         case 'saveWindowConfig': {
@@ -208,10 +210,10 @@ export class ClaudeAccountViewProvider {
     }, null, context.subscriptions);
   }
 
-  static async pushMetrics(context: vscode.ExtensionContext, metrics: AggregatedMetrics, sessions: Session[]): Promise<void> {
+  static async pushMetrics(context: vscode.ExtensionContext, metrics: AggregatedMetrics, sessions: Session[], claudeQuota?: ClaudeRateLimitSnapshot): Promise<void> {
     if (!this.currentPanel) { return; }
     const plan = context.globalState.get<ClaudePlan>(PLAN_STATE_KEY, 'pro');
-    this.currentPanel.webview.html = this.getHtml(this.currentPanel.webview, context, metrics, plan, sessions);
+    this.currentPanel.webview.html = this.getHtml(this.currentPanel.webview, context, metrics, plan, sessions, claudeQuota);
   }
 
   // ─── HTML ─────────────────────────────────────────────────────────────────
@@ -222,6 +224,7 @@ export class ClaudeAccountViewProvider {
     metrics: AggregatedMetrics | undefined,
     plan: ClaudePlan,
     sessions: Session[],
+    claudeQuota?: ClaudeRateLimitSnapshot,
   ): string {
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'assets', 'logo.png'));
     const nonce   = crypto.randomBytes(16).toString('hex');
@@ -246,6 +249,16 @@ export class ClaudeAccountViewProvider {
     const sessionCardLabel  = winCfg.sessionResetTime ? 'Current session' : 'Session window (last 5 h)';
     const sessionIsManual   = !!winCfg.sessionResetTime;
     const sessionResetPassed = sessionIsManual && sessionResetLabel === 'passed — update ⚙';
+
+    // Real plan-quota (5h/7d), when available — takes priority over the local session-log estimate above.
+    const hasLiveQuota = !!claudeQuota && (claudeQuota.fiveHourPct !== null || claudeQuota.sevenDayPct !== null);
+    const fmtResetFromIso = (iso: string | null): string => {
+      if (!iso) { return '—'; }
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? '—' : fmtCountdown(d);
+    };
+    const planColorFallback = '#39FF14';
+    const pctBarColor = (pct: number) => pct >= 90 ? '#f38ba8' : pct >= 70 ? '#f9e2af' : planColorFallback;
 
     // Billing period info (calendar month)
     const now      = new Date();
@@ -392,7 +405,9 @@ export class ClaudeAccountViewProvider {
     <div class="section">
       <div class="section-hd">
         <span class="section-title">Usage Limits</span>
-        <span class="section-badge dim">session files</span>
+        ${hasLiveQuota
+          ? `<span class="section-badge" style="background:rgba(57,255,20,0.1);color:#39FF14;">live &middot; Anthropic API</span>`
+          : `<span class="section-badge dim">session files</span>`}
         <button class="cfg-gear-btn" id="cfgToggleBtn" title="Configure reset times">&#9881;</button>
       </div>
 
@@ -425,6 +440,27 @@ export class ClaudeAccountViewProvider {
         <button class="btn-cfg-save" id="btnCfgSave">Save</button>
       </div>
 
+      ${hasLiveQuota ? `
+      <div class="win-grid">
+        <div class="win-card" id="winCardSession">
+          <div class="win-label">Current session (5h)</div>
+          <div class="win-tokens">${claudeQuota!.fiveHourPct !== null ? claudeQuota!.fiveHourPct + '%' : '—'}</div>
+          <div class="billing-bar-wrap" style="margin:4px 0 0 0;">
+            <div class="billing-bar" style="width:${claudeQuota!.fiveHourPct ?? 0}%;background:${pctBarColor(claudeQuota!.fiveHourPct ?? 0)};"></div>
+          </div>
+          <div class="win-reset ok">&#9679; Resets ${fmtResetFromIso(claudeQuota!.fiveHourResetsAt)}</div>
+        </div>
+        <div class="win-card" id="winCardWeekly">
+          <div class="win-label">Weekly window (7d)</div>
+          <div class="win-tokens">${claudeQuota!.sevenDayPct !== null ? claudeQuota!.sevenDayPct + '%' : '—'}</div>
+          <div class="billing-bar-wrap" style="margin:4px 0 0 0;">
+            <div class="billing-bar" style="width:${claudeQuota!.sevenDayPct ?? 0}%;background:${pctBarColor(claudeQuota!.sevenDayPct ?? 0)};"></div>
+          </div>
+          <div class="win-reset ok">&#9679; Resets ${fmtResetFromIso(claudeQuota!.sevenDayResetsAt)}</div>
+        </div>
+      </div>
+      <p class="win-note">&#9432;&nbsp; Real plan-quota % from Anthropic's rate-limit headers — the same numbers shown on claude.ai &rarr; Settings &rarr; Usage. Reads your existing Claude Code login; one small API ping at most every 5 minutes. Disable via <strong>aiInsights.providers.claudeCode.liveQuota.enabled</strong>.</p>
+      ` : `
       <div class="win-grid">
         <div class="win-card" id="winCardSession">
           <div class="win-label" id="winSessionLabel">${sessionCardLabel}</div>
@@ -440,7 +476,8 @@ export class ClaudeAccountViewProvider {
         </div>
       </div>
 
-      <p class="win-note">&#9432;&nbsp; Limits are not publicly documented — these show local Claude Code token usage, not a % of your quota.${sessionIsManual ? '' : ' Session reset is auto-estimated from local interactions.'}</p>
+      <p class="win-note">&#9432;&nbsp; Limits are not publicly documented — these show local Claude Code token usage, not a % of your quota.${sessionIsManual ? '' : ' Session reset is auto-estimated from local interactions.'} Real plan-quota % appears here automatically if signed into Claude Code (see <strong>aiInsights.providers.claudeCode.liveQuota.enabled</strong>).</p>
+      `}
     </div>
 
     <!-- Usage stats -->
@@ -606,45 +643,6 @@ function statCard(label: string, value: string, sub: string): string {
     <div class="stat-label">${label}</div>
     <div class="stat-value">${value}</div>
     ${sub ? `<div class="stat-sub">${sub}</div>` : ''}
-  </div>`;
-}
-
-function connectedApiSection(maskedKey: string): string {
-  return `<div class="connected-key-row">
-    <div class="connected-key-info">
-      <div class="connected-key-dot"></div>
-      <span class="connected-key-text">${maskedKey}</span>
-    </div>
-    <button class="btn-disconnect" onclick="handleDisconnect()">Disconnect</button>
-  </div>
-  <div class="rl-grid" id="rlCards">
-    ${['', '', ''].map(() =>
-      `<div class="rl-card rl-skeleton"><div class="rl-skel-bar"></div><div class="rl-skel-bar short"></div></div>`
-    ).join('')}
-  </div>`;
-}
-
-function disconnectedApiSection(): string {
-  return `<p class="api-note">Enter your Anthropic API key to see live rate limits. Your key is stored in VS&nbsp;Code's secure secret storage and never leaves your machine.<br>
-    If you have a <strong>Claude Pro or Max subscription</strong> you don't need this — your usage is already tracked above from local Claude Code session files.</p>
-  <div class="api-connect-form">
-    <input type="password" id="apiKeyInput" class="api-key-input"
-      placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false"
-      onkeydown="if(event.key==='Enter') handleConnect()">
-    <button id="btnConnect" class="btn-connect" onclick="handleConnect()">Connect API Key</button>
-    <div id="connectError" class="connect-error" style="display:none;"></div>
-  </div>`;
-}
-
-function collapsedApiSection(): string {
-  return `<p class="api-note" style="margin:0;">Enter your Anthropic API key to see live rate limits.<br>
-    <strong style="color:var(--text-primary);">Claude Pro / Max subscribers don't need this</strong> — usage is tracked above from local session files.</p>
-  <div class="api-connect-form" style="margin-top:12px;">
-    <input type="password" id="apiKeyInput" class="api-key-input"
-      placeholder="sk-ant-api03-…" autocomplete="off" spellcheck="false"
-      onkeydown="if(event.key==='Enter') handleConnect()">
-    <button id="btnConnect" class="btn-connect" onclick="handleConnect()">Connect API Key</button>
-    <div id="connectError" class="connect-error" style="display:none;"></div>
   </div>`;
 }
 

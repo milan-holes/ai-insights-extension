@@ -2,7 +2,7 @@
   "name": "ai-insights",
   "displayName": "AI Insights - Token Tracker",
   "description": "Track token usage, costs, and AI metrics across GitHub Copilot, Antigravity, Claude Code, and Codex.",
-  "version": "0.1.15",
+  "version": "0.1.17",
   "publisher": "thewalking-dev",
   "license": "MIT",
   "icon": "assets/logo.png",
@@ -161,6 +161,26 @@
         "title": "Stop Sharing Stats",
         "category": "AI Insights",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "aiInsights.prepareHandoff",
+        "title": "Prepare Session Handoff (Quota Safe-Stop)",
+        "category": "AI Insights"
+      },
+      {
+        "command": "aiInsights.createCheckpoint",
+        "title": "Create Safe-Stop Checkpoint",
+        "category": "AI Insights"
+      },
+      {
+        "command": "aiInsights.showCheckpoints",
+        "title": "Show Safe-Stop Checkpoints",
+        "category": "AI Insights"
+      },
+      {
+        "command": "aiInsights.showQuotaStatus",
+        "title": "Show Quota Windows",
+        "category": "AI Insights"
       }
     ],
     "menus": {
@@ -228,6 +248,7 @@
           "description": "Maximum number of Copilot sessions kept in the persistent snapshot store (survives Copilot deleting/overwriting its own chat files). Oldest snapshots by end time are evicted once this limit is exceeded."
         },
         "aiInsights.providers.copilot.additionalSessionPaths": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -241,6 +262,7 @@
           "description": "Enable Antigravity (Gemini) session log tracking."
         },
         "aiInsights.providers.antigravity.additionalSessionPaths": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -254,6 +276,7 @@
           "description": "Enable Claude Code session log tracking."
         },
         "aiInsights.providers.claudeCode.additionalSessionPaths": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -261,12 +284,18 @@
           "default": [],
           "description": "Extra directories to scan for Claude Code JSONL session files, in addition to ~/.claude/projects/. Useful when sessions are stored at a non-default location, e.g. on a remote server or when CLAUDE_HOME is overridden. Supports ~ expansion."
         },
+        "aiInsights.providers.claudeCode.liveQuota.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show your real Claude Code plan-quota (5-hour and weekly session-window usage %, the same numbers shown on claude.ai/settings/usage) in the Claude panel. Reuses the OAuth token already on disk from 'claude login' - makes a minimal (max_tokens: 1) request to api.anthropic.com to read rate-limit headers only, no message content sent or stored, at most once every 5 minutes and only while Claude Code sessions are present. Disable to keep this fully local (falls back to a session-log-based estimate)."
+        },
         "aiInsights.providers.codex.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable Codex session log tracking."
         },
         "aiInsights.providers.codex.additionalSessionPaths": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -280,6 +309,7 @@
           "description": "Enable GitHub Copilot for JetBrains session tracking (reads JSONL partition files from ~/.copilot/jb/). On WSL2 also probes /mnt/c/Users/<name>/.copilot/jb/ so sessions from WebStorm/IntelliJ running on Windows are discovered automatically."
         },
         "aiInsights.providers.jetbrainsAI.additionalSessionPaths": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -290,15 +320,16 @@
         "aiInsights.providers.visualStudio.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable Visual Studio Copilot Chat session tracking (reads MessagePack session files from .vs/**/copilot-chat/). Also supports WSL2: scans /mnt/c/Users/ automatically."
+          "description": "Enable Visual Studio Copilot Chat session tracking (reads MessagePack session files from .vs/**/copilot-chat/ and Visual Studio's AppData VSGitHubCopilot store). Also supports WSL2: scans /mnt/c/Users/ automatically."
         },
         "aiInsights.providers.visualStudio.additionalSessionPaths": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "description": "Extra directories to scan for .vs/**/copilot-chat/ session folders, in addition to the auto-discovered dev roots. Useful for repos stored outside the usual locations. Supports ~ expansion."
+          "description": "Extra directories to scan for .vs/**/copilot-chat/ session folders, in addition to the auto-discovered dev roots and AppData VSGitHubCopilot store. Useful for repos stored outside the usual locations. Supports ~ expansion."
         },
         "aiInsights.refreshIntervalMinutes": {
           "type": "number",
@@ -308,11 +339,13 @@
           "description": "Auto-refresh interval in minutes."
         },
         "aiInsights.shareHost": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Optional host/IP to use in shared dashboard URLs. Set this to your computer's Wi-Fi/LAN IP when auto-detected links are not reachable from another device, especially from WSL, SSH remotes, or containers."
         },
         "aiInsights.sharePort": {
+          "scope": "machine",
           "type": "number",
           "default": 0,
           "minimum": 0,
@@ -320,6 +353,7 @@
           "description": "Fixed port for the local share server (0 = auto-assign). Set a fixed port (e.g. 57312) so you can configure a permanent Windows firewall rule and netsh port-proxy when running from WSL."
         },
         "aiInsights.sharing.mode": {
+          "scope": "machine",
           "type": "string",
           "enum": [
             "localNetwork",
@@ -333,9 +367,16 @@
           "description": "How the Share button publishes dashboard stats."
         },
         "aiInsights.sharing.teamServer.endpointUrl": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "description": "Base URL of the AI Insights sharing server, for example https://ai-insights.example.com. Used when aiInsights.sharing.mode is teamServer."
+        },
+        "aiInsights.context.limitTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Context window size, in tokens, used as the denominator for context fill %, context runway, lost-in-the-middle risk, and the status bar. Leave at `0` to resolve each session's window from its model (Claude Opus 5 / Sonnet 5 and the 4.6+ families are 1M, Claude Haiku 4.5 is 200K, Gemini is ~1M, and so on). Set it explicitly when the model table can't know your real window - most importantly the 1M context window on Claude Sonnet / Opus, which is a gated opt-in that session logs do not record, so it cannot be detected from the model name alone. Example: `1000000`."
         },
         "aiInsights.sessionLookbackDays": {
           "type": "number",
@@ -425,26 +466,78 @@
           "type": "string",
           "default": "$(symbol-numeric) {count}{sel} | {model}",
           "description": "Template for the live token counter status bar item. Placeholders: {count}, {sel} (empty or \" sel\"), {model}, {family}, {provider}."
+        },
+        "aiInsights.quotaGuard.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn before a provider quota window runs out mid-session, so work can be stopped at a clean point instead of being cut off half-finished."
+        },
+        "aiInsights.quotaGuard.warnMinutesOfWork": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "description": "Warn once fewer than this many minutes of work remain in the quota window at the current burn rate. Keep this above aiInsights.refreshIntervalMinutes, since quota is only re-checked on each refresh."
+        },
+        "aiInsights.quotaGuard.criticalMinutesOfWork": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "Escalate the warning to critical below this many minutes of remaining work."
+        },
+        "aiInsights.quotaGuard.warnPercentUsed": {
+          "type": "number",
+          "default": 85,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Fallback warning threshold (percent of the window used) applied when there is not yet enough history to measure a burn rate."
+        },
+        "aiInsights.quotaGuard.criticalPercentUsed": {
+          "type": "number",
+          "default": 95,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Fallback critical threshold (percent of the window used) applied when there is not yet enough history to measure a burn rate."
+        },
+        "aiInsights.quotaGuard.autoCheckpoint": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically snapshot the working tree when a quota warning fires, so half-finished work stays recoverable. The snapshot is written as a git commit object under refs/ai-insights/checkpoints/ via a temporary index - your working tree, index, HEAD and branches are never modified."
+        },
+        "aiInsights.quotaGuard.handoffDirectory": {
+          "type": "string",
+          "default": ".ai-insights",
+          "description": "Directory (relative to the repository root) where session handoff briefs are written. Added to .git/info/exclude automatically so it stays out of git status."
         }
       }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "tsc --noEmit && node esbuild.js",
+    "compile": "npm test && tsc --noEmit && node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "tsc --noEmit && node esbuild.js --production",
+    "package": "npm test && tsc --noEmit && node esbuild.js --production",
+    "electron:compile": "tsc -p tsconfig.electron.json && node esbuild.js --electron",
+    "electron:test": "node test/electron/viewHost.test.cjs",
+    "electron:dev": "node esbuild.js --electron && node src/electron/launch.cjs dist/electron/main.js",
+    "electron:watch": "node esbuild.js --electron --watch",
+    "electron:start": "npm run electron:compile && node src/electron/launch.cjs dist/electron/main.js",
+    "electron:package": "tsc -p tsconfig.electron.json && node esbuild.js --electron --production",
+    "electron:build:win": "npm run electron:package && node src/electron/package.cjs",
     "lint": "eslint src --ext ts",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+    "test": "tsc -p tsconfig.test.json && node --test \"out-test/test/**/*.test.js\"",
+    "vendor:assets": "bash scripts/vendor-assets.sh"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "@vscode/vsce": "^3.0.0",
-    "esbuild": "^0.20.0",
+    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@typescript-eslint/parser": "^8.71.0",
+    "@vscode/vsce": "^4.0.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "eslint": "^8.56.0",
+    "mermaid": "^10.9.8",
     "typescript": "^5.3.0"
   },
   "dependencies": {

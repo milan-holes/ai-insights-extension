@@ -4,6 +4,31 @@
  * GitHub Copilot, Antigravity, and Claude Code.
  */
 
+/**
+ * Where a cost figure came from, in order of decreasing authority.
+ *
+ * - `billed` - read from the provider's own billing record (Copilot's
+ *   `copilotUsageNanoAiu`). Exact. Also used for local models, whose $0 is exact.
+ * - `calibrated` - our estimate, scaled by a factor measured against this machine's
+ *   own billed requests.
+ * - `estimated` - our estimate at published list rates, with nothing to check it against.
+ *
+ * See core/costEstimation.ts and wiki/copilot-billing-calibration.md.
+ */
+export type CostSource = 'billed' | 'calibrated' | 'estimated';
+
+/**
+ * Where a model's per-token rates came from.
+ *
+ * - `official` - the pricing table.
+ * - `fallback` - a provider-billed model missing from the table, priced at a generic rate.
+ * - `local`    - a model running on the user's machine; costs nothing.
+ * - `unpriced` - a model on the user's own key (`byok`, see modelNames.ts) that is not in
+ *   the table. Counted as $0 rather than guessed: the vendor's rate is unknown, and a
+ *   generic guess would read as a real figure.
+ */
+export type PricingSource = 'official' | 'fallback' | 'local' | 'unpriced';
+
 /** Supported AI provider identifiers */
 export type ProviderId = 'copilot' | 'antigravity' | 'claudeCode' | 'codex' | 'jetbrainsAI' | 'visualStudio';
 
@@ -52,6 +77,13 @@ export interface Interaction {
    * local logs never report actual cache token counts).
    */
   cacheTokensEstimated?: boolean;
+  /**
+   * The cost GitHub actually billed for this turn, read from `copilotUsageNanoAiu` in
+   * Copilot's debug log. Exact, not estimated - prefer it over `calculateCost()` when
+   * present. Copilot only; absent for every other provider and for Copilot sessions
+   * logged before the field existed.
+   */
+  billedCostUsd?: number;
 }
 
 /** A normalized session from any provider */
@@ -81,6 +113,26 @@ export interface Session {
   /** Estimated cost in USD for this session */
   estimatedCostUsd?: number;
   /**
+   * Where `estimatedCostUsd` came from: `billed` when every turn carried GitHub's own
+   * billed figure, `calibrated` when our estimate was corrected by a factor measured
+   * against this machine's billed requests, `estimated` for a plain list-rate estimate.
+   * See core/costEstimation.ts and wiki/copilot-billing-calibration.md.
+   */
+  costSource?: CostSource;
+  /**
+   * Sum of the turns that carried GitHub's own billed cost. Equals `estimatedCostUsd`
+   * when `costSource` is `billed`; a partial figure when only some turns had it.
+   */
+  billedCostUsd?: number;
+  /** How many interactions contributed to `billedCostUsd`. */
+  billedInteractionCount?: number;
+  /**
+   * The fixed prompt prefix Copilot sends on every request of this session - system
+   * prompt plus tool catalog - read from the `system_prompt_*.json` / `tools_*.json`
+   * sidecars next to the debug log. Absent when the sidecars were not written.
+   */
+  promptPrefix?: PromptPrefixBreakdown;
+  /**
    * MCP server names active during this session (e.g. "claude_ai_Gmail").
    * Parsed from deferred_tools_delta attachments in Claude Code sessions.
    */
@@ -94,6 +146,72 @@ export interface Session {
   peakEffectiveContextTokens?: number;
   /** True when any interaction's cache tokens are heuristic estimates rather than real provider data. */
   cacheTokensEstimated?: boolean;
+  /**
+   * Real provider rate-limit state captured from the session log itself, when the
+   * provider writes it there (Codex only today - see providers/codex.ts). Distinct
+   * from the live-API quota in copilotQuota/claudeQuota: this needs no network call.
+   */
+  rateLimits?: SessionRateLimits;
+}
+
+/**
+ * The fixed prefix Copilot prepends to every request in a session: the system prompt and
+ * the full tool catalog. Both are resent (and normally cache-read) on every turn, so a
+ * large catalog is a per-request tax rather than a one-off. Token counts are character
+ * estimates at ~4 chars/token - Copilot writes the sidecars as text, not token counts.
+ *
+ * See core/copilotPrefix.ts.
+ */
+export interface PromptPrefixBreakdown {
+  /** Estimated tokens of tool-schema JSON sent on every request. */
+  toolCatalogTokens: number;
+  /** Estimated tokens of system prompt sent on every request. */
+  systemPromptTokens: number;
+  /** `toolCatalogTokens + systemPromptTokens`. */
+  totalTokens: number;
+  /** Tool names offered to the model. */
+  definedTools: string[];
+  /** Tools the session's own interactions actually called. */
+  usedTools: string[];
+  /** Offered but never called in this session. */
+  unusedTools: string[];
+  /** Estimated tokens of schema belonging to `unusedTools` - the avoidable share. */
+  unusedToolTokens: number;
+  /**
+   * `totalTokens` as a share (0-1) of the session's mean per-request input, so the
+   * prefix can be reported as "x% of a typical request". Absent with no input data.
+   */
+  shareOfMeanInput?: number;
+}
+
+/** One provider rate-limit window as reported inside a session log. */
+export interface SessionRateLimitWindow {
+  /** 0-100 utilization of the window. */
+  usedPercent: number;
+  /** Window length in minutes (e.g. 10080 for a weekly window). */
+  windowMinutes: number;
+  /** ISO datetime the window resets; null when the provider omits it. */
+  resetsAt: string | null;
+}
+
+/**
+ * Rate-limit state parsed out of a provider's own session log. Codex writes this
+ * onto every `token_count` event, which gives real quota data for a provider with
+ * no public quota endpoint.
+ */
+export interface SessionRateLimits {
+  /** Provider plan name, e.g. "free", "plus". */
+  planType?: string;
+  /** Shorter window (typically hourly/5-hourly). */
+  primary?: SessionRateLimitWindow;
+  /** Longer window (typically weekly). */
+  secondary?: SessionRateLimitWindow;
+  /** Remaining prepaid credits, when the provider reports them. */
+  creditsRemaining?: number | null;
+  /** Non-null when the provider recorded that a limit was actually hit. */
+  rateLimitReachedType?: string | null;
+  /** ISO timestamp of the log entry this came from. */
+  capturedAt: string;
 }
 
 /** Aggregated daily usage for a provider */
@@ -131,6 +249,14 @@ export interface ProviderMetrics {
   averageTokensPerSession: number;
   averageInteractionsPerSession: number;
   estimatedCost: number;
+  /**
+   * Where `estimatedCost` came from, across every contributing interaction: `billed` only
+   * when all of them carried the provider's own billed figure, `calibrated` when our
+   * estimate was corrected against measured billed requests, `estimated` otherwise.
+   */
+  costSource: CostSource;
+  /** The share of `estimatedCost` that is GitHub's own billed figure rather than an estimate. */
+  billedCost: number;
   estimatedCO2Grams: number;
   estimatedWaterLiters: number;
   treeEquivalentYears: number;
@@ -170,7 +296,7 @@ export interface ModelUsageMetrics {
   cachedInputCostPerMillion: number | null;
   outputCostPerMillion: number | null;
   cacheCreationCostPerMillion: number | null;
-  pricingSource: 'official' | 'fallback';
+  pricingSource: PricingSource;
 }
 
 // ─── Budget & Cost Management ─────────────────────────────────────────────────
@@ -314,6 +440,31 @@ export interface AggregatedMetrics {
   sessionComplexity: SessionComplexityMetrics;
   contextEngagement: ContextEngagement;
   sessionHygiene: SessionHygieneSummary;
+  /** Fixed prompt-prefix overhead across Copilot sessions whose sidecars were readable. */
+  promptPrefix: PromptPrefixSummary;
+}
+
+/**
+ * Prompt-prefix overhead rolled up across sessions. Every token figure is a character
+ * estimate (see PromptPrefixBreakdown), so this is a sizing signal, not a measurement.
+ */
+export interface PromptPrefixSummary {
+  /** Copilot sessions that had readable sidecars. 0 => nothing below is meaningful. */
+  sessionsWithPrefix: number;
+  /** Mean fixed prefix (system prompt + tool catalog) per request, in estimated tokens. */
+  meanPrefixTokens: number;
+  /** Mean estimated tokens of tool schema never called in the session that was offered it. */
+  meanUnusedToolTokens: number;
+  /** Mean share (0-1) of a typical request taken by the fixed prefix. */
+  meanShareOfInput?: number;
+  /**
+   * Tools offered in at least one session and never called in any of them, worst first.
+   * `sessionsOffered` is how many sessions carried the tool's schema without using it.
+   */
+  neverUsedTools: Array<{ name: string; sessionsOffered: number }>;
+  /** Distinct tools offered across these sessions, and how many were called at least once. */
+  toolsOffered: number;
+  toolsEverUsed: number;
 }
 
 /** Whether a config file exists and when it was last modified */
@@ -541,6 +692,10 @@ export interface ContextRotAnalysis {
   freshSessionBrief: FreshSessionBrief;
   /** Estimated turns remaining before hitting context limit at current growth rate; null if not estimable */
   contextRunway: number | null;
+  /** Context window the session's model actually has, used as the denominator for every context metric */
+  contextWindowTokens: number;
+  /** Where contextWindowTokens came from: user override, the model table, or the fallback default */
+  contextWindowSource: 'override' | 'model' | 'default';
   growthCurve: ContextGrowthCurve;
   /** 0–100: percentage of cumulative input tokens served from cache */
   cacheEfficiencyRate: number;
@@ -618,3 +773,4 @@ export interface DiagnosticReport {
   }[];
   timestamp: string;
 }
+

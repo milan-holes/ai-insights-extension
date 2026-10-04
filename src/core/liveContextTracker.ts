@@ -1,17 +1,19 @@
 import * as vscode from 'vscode';
 import { ClaudeCodeProvider } from '../providers/claudeCode';
 import { computeContextRotScore } from './contextRot';
+import { contextFillPct, resolveSessionContextWindow } from './contextWindow';
 
 const LIVE_THRESHOLD_MS = 3 * 60 * 1000;
 const EXPIRE_AFTER_MS = 3 * 60 * 1000;
 const DEBOUNCE_MS = 1500;
-const CONTEXT_LIMIT_TOKENS = 200_000;
 
 export interface LiveContextInfo {
   sessionTitle: string | undefined;
-  /** inputTokens + cacheReadTokens for the most recent turn - approx context window usage */
+  /** effectiveContextTokens for the most recent turn - the real context window usage */
   lastInputTokens: number;
   contextLimitTokens: number;
+  /** Where contextLimitTokens came from: user override, the model table, or the fallback default */
+  contextLimitSource: 'override' | 'model' | 'default';
   contextPct: number;
   healthLabel: 'healthy' | 'warning' | 'stale';
   healthScore: number;
@@ -96,13 +98,18 @@ export class LiveContextTracker implements vscode.Disposable {
       if (Date.now() - lastTs > LIVE_THRESHOLD_MS) { return; }
 
       const score = computeContextRotScore(session);
-      const lastInputTokens = last.inputTokens + last.cacheReadTokens;
+      // effectiveContextTokens includes cacheWriteTokens; input + cacheRead alone
+      // under-reported the status bar on every turn that wrote to the cache.
+      const lastInputTokens = last.effectiveContextTokens
+        ?? (last.inputTokens + last.cacheReadTokens + last.cacheWriteTokens);
+      const contextWindow = resolveSessionContextWindow(session);
 
       const info: LiveContextInfo = {
         sessionTitle: session.title,
         lastInputTokens,
-        contextLimitTokens: CONTEXT_LIMIT_TOKENS,
-        contextPct: Math.min(100, Math.round(lastInputTokens / CONTEXT_LIMIT_TOKENS * 100)),
+        contextLimitTokens: contextWindow.tokens,
+        contextLimitSource: contextWindow.source,
+        contextPct: contextFillPct(lastInputTokens, contextWindow.tokens),
         healthLabel: score.label,
         healthScore: score.score,
         turnsCount: score.turnsCount,

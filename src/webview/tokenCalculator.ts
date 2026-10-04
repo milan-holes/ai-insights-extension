@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto'
 import * as path from 'node:path'
 import * as vscode from 'vscode'
 import pricingData from '../data/modelPricing.json'
+import { DEFAULT_CONTEXT_WINDOW_TOKENS, getContextWindowOverride } from '../core/contextWindow'
 import { designTokensCss } from './designSystem'
 
 const TEXT_EXTENSIONS = new Set([
@@ -84,6 +85,12 @@ export class TokenCalculatorProvider {
 
   private static buildHTML(nonce: string, cssUri: vscode.Uri, jsUri: vscode.Uri, webview: vscode.Webview): string {
     const pricingJson = JSON.stringify(pricingData.pricing)
+    // Context windows ride along inside the pricing entries (contextWindowTokens);
+    // the calculator used to keep its own copy, which drifted a full generation.
+    const contextDefaults = JSON.stringify({
+      fallback: DEFAULT_CONTEXT_WINDOW_TOKENS,
+      override: getContextWindowOverride() ?? 0,
+    })
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -125,7 +132,7 @@ export class TokenCalculatorProvider {
     <div id="tc-model-list" class="tc-model-list"></div>
   </div>
 </div>
-<script nonce="${nonce}">window.TC_PRICING=${pricingJson};</script>
+<script nonce="${nonce}">window.TC_PRICING=${pricingJson};window.TC_CONTEXT=${contextDefaults};</script>
 <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`

@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { BaseProvider } from './base';
-import { Session, Interaction } from '../types';
+import { Session, Interaction, SessionRateLimits, SessionRateLimitWindow } from '../types';
 import { calculateCost } from '../core/costEstimation';
 import { extractContextRefs } from '../core/contextReferences';
 
@@ -38,9 +38,8 @@ export class CodexProvider extends BaseProvider {
   async discoverSessionFiles(): Promise<string[]> {
     const files: string[] = [];
     for (const dir of [this.sessionsDir, ...this.extraDirs]) {
-      try {
-        if (fs.existsSync(dir)) { this.walkDir(dir, files); }
-      } catch { /* skip */ }
+      // walkDir's readdirSync already throws-and-skips for missing dirs.
+      this.walkDir(dir, files);
     }
     return files;
   }
@@ -77,6 +76,7 @@ export class CodexProvider extends BaseProvider {
       let pendingCommandRuns: string[] = [];
       let pendingFileAccesses: Array<{ tool: string; path: string }> = [];
       let pendingUserTexts: string[] = [];
+      let rateLimits: SessionRateLimits | undefined;
 
       for (const line of lines) {
         try {
@@ -134,6 +134,12 @@ export class CodexProvider extends BaseProvider {
             continue;
           }
 
+          // Codex records real quota state alongside every token count. Captured
+          // before the usage check below, since a `token_count` entry can carry
+          // rate limits without usable token numbers.
+          const parsedRateLimits = this.extractRateLimits(entry.payload?.rate_limits, timestamp);
+          if (parsedRateLimits) { rateLimits = parsedRateLimits; }
+
           const usage = entry.payload?.info?.last_token_usage as TokenUsage | undefined;
           if (!usage) { continue; }
 
@@ -158,6 +164,7 @@ export class CodexProvider extends BaseProvider {
             toolCalls: pendingToolCalls,
             commandRuns: pendingCommandRuns.length > 0 ? pendingCommandRuns : undefined,
             fileAccesses: pendingFileAccesses.length > 0 ? pendingFileAccesses : undefined,
+            promptPreview: pendingUserTexts[0]?.trim().slice(0, 200) || undefined,
             contextRefs: extractContextRefs(pendingUserTexts.join('\n')),
           });
           pendingToolCalls = [];
@@ -195,8 +202,54 @@ export class CodexProvider extends BaseProvider {
         sourceFile: filePath,
         title,
         estimatedCostUsd,
+        rateLimits,
       };
     } catch { return null; }
+  }
+
+  /**
+   * Parses the `rate_limits` object Codex writes onto `token_count` events:
+   *
+   * ```json
+   * "rate_limits": { "primary": { "used_percent": 58.0, "window_minutes": 10080,
+   *                               "resets_at": 1778185368 },
+   *                  "secondary": null, "credits": null, "plan_type": "free",
+   *                  "rate_limit_reached_type": null }
+   * ```
+   *
+   * This is real quota data for a provider with no public quota endpoint, read
+   * with no network call. `resets_at` is unix seconds. Returns `undefined` for
+   * anything unparseable - the shape is undocumented and may change.
+   */
+  private extractRateLimits(raw: unknown, capturedAt: Date): SessionRateLimits | undefined {
+    if (!raw || typeof raw !== 'object') { return undefined; }
+    const data = raw as any;
+
+    const primary = this.extractRateLimitWindow(data.primary);
+    const secondary = this.extractRateLimitWindow(data.secondary);
+    if (!primary && !secondary) { return undefined; }
+
+    return {
+      planType: typeof data.plan_type === 'string' ? data.plan_type : undefined,
+      primary,
+      secondary,
+      creditsRemaining: typeof data.credits === 'number' ? data.credits : null,
+      rateLimitReachedType: typeof data.rate_limit_reached_type === 'string' ? data.rate_limit_reached_type : null,
+      capturedAt: capturedAt.toISOString(),
+    };
+  }
+
+  private extractRateLimitWindow(raw: unknown): SessionRateLimitWindow | undefined {
+    if (!raw || typeof raw !== 'object') { return undefined; }
+    const data = raw as any;
+    if (typeof data.used_percent !== 'number' || !Number.isFinite(data.used_percent)) { return undefined; }
+
+    const resetsAtSeconds = typeof data.resets_at === 'number' ? data.resets_at : null;
+    return {
+      usedPercent: Math.min(100, Math.max(0, data.used_percent)),
+      windowMinutes: typeof data.window_minutes === 'number' ? data.window_minutes : 0,
+      resetsAt: resetsAtSeconds ? new Date(resetsAtSeconds * 1000).toISOString() : null,
+    };
   }
 
   private toTokenCount(value: unknown): number {

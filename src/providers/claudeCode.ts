@@ -27,9 +27,8 @@ export class ClaudeCodeProvider extends BaseProvider {
   async discoverSessionFiles(): Promise<string[]> {
     const files: string[] = [];
     for (const dir of this.getSessionDirectories()) {
-      try {
-        if (fs.existsSync(dir)) { this.walkDir(dir, files); }
-      } catch { /* skip */ }
+      // walkDir's readdirSync already throws-and-skips for missing dirs.
+      this.walkDir(dir, files);
     }
     return files;
   }

@@ -31,10 +31,33 @@ interface SnapshotFile {
 export class SessionSnapshotStore {
   private readonly filePath: string;
   private maxSnapshots: number;
+  /**
+   * The snapshot file held in memory for the duration of one refresh.
+   *
+   * save() used to read, parse, re-serialize and rewrite the whole file on every
+   * call, and the refresh loop calls it once per Copilot session - O(n) full-file
+   * rewrites per refresh, growing with maxSnapshots (default 2000). Now a refresh
+   * reads once (beginScan), mutates in memory, and writes once (flush).
+   */
+  private data: SnapshotFile | null = null;
+  private dirty = false;
 
   constructor(storageDir: string, maxSnapshots: number = DEFAULT_MAX_SNAPSHOTS) {
     this.filePath = path.join(storageDir, SNAPSHOT_FILE);
     this.maxSnapshots = maxSnapshots;
+  }
+
+  /** Drop the in-memory copy so the next read picks up writes from other windows. */
+  beginScan(): void {
+    this.flush();
+    this.data = null;
+  }
+
+  /** Write pending mutations to disk. */
+  flush(): void {
+    if (!this.data || !this.dirty) { return; }
+    this.write(this.data);
+    this.dirty = false;
   }
 
   /** Update the snapshot cap, e.g. when the user changes the setting at runtime. */
@@ -46,6 +69,7 @@ export class SessionSnapshotStore {
   save(session: Session): void {
     const data = this.loadRaw();
     data.snapshots[session.id] = this.serialize(session);
+    this.dirty = true;
 
     const ids = Object.keys(data.snapshots);
     if (ids.length > this.maxSnapshots) {
@@ -58,8 +82,6 @@ export class SessionSnapshotStore {
         delete data.snapshots[sorted[i]];
       }
     }
-
-    this.write(data);
   }
 
   /** Return all stored snapshots as deserialized Session objects. */
@@ -78,16 +100,19 @@ export class SessionSnapshotStore {
         changed = true;
       }
     }
-    if (changed) { this.write(data); }
+    if (changed) { this.dirty = true; }
   }
 
   private loadRaw(): SnapshotFile {
+    if (this.data) { return this.data; }
+    let parsed: SnapshotFile = { version: 1, snapshots: {} };
     try {
       const raw = fs.readFileSync(this.filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as SnapshotFile;
-      if (parsed?.version === 1 && parsed.snapshots) { return parsed; }
+      const onDisk = JSON.parse(raw) as SnapshotFile;
+      if (onDisk?.version === 1 && onDisk.snapshots) { parsed = onDisk; }
     } catch { /* first run or corrupt file — start fresh */ }
-    return { version: 1, snapshots: {} };
+    this.data = parsed;
+    return parsed;
   }
 
   private write(data: SnapshotFile): void {
